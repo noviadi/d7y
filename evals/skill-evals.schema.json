@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://d7y.local/schemas/skill-evals.schema.json",
+  "title": "Discovery Workbench Skill Evals",
+  "type": "object",
+  "required": ["schema_version", "skill_name", "evals"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "skill_name": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "evals": {
+      "type": "array",
+      "minItems": 3,
+      "items": {
+        "$ref": "#/$defs/eval"
+      }
+    }
+  },
+  "$defs": {
+    "eval": {
+      "type": "object",
+      "required": ["id", "prompt", "should_trigger", "expected_output", "files", "assertions"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "should_trigger": {
+          "type": "boolean"
+        },
+        "expected_output": {
+          "type": "string",
+          "minLength": 1
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/file"
+          }
+        },
+        "assertions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/assertion"
+          }
+        }
+      }
+    },
+    "file": {
+      "type": "object",
+      "required": ["source", "destination"],
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "destination": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "assertion": {
+      "type": "object",
+      "required": ["id", "dimension", "kind", "required", "description"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+        },
+        "dimension": {
+          "enum": ["invocation", "process", "outcome", "quality", "efficiency"]
+        },
+        "kind": {
+          "enum": ["deterministic", "rubric", "human"]
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "grader": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

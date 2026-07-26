@@ -1,0 +1,102 @@
+{
+  "$schema": "../../../evals/skill-evals.schema.json",
+  "schema_version": 1,
+  "skill_name": "writing-great-skills",
+  "evals": [
+    {
+      "id": "create-discovery-skill",
+      "prompt": "Create a D7Y skill named synthesizing-interviews that turns several interview transcripts into evidence, contradictions, and open questions. Put it under skills/ and make it ready for future agent installation.",
+      "should_trigger": true,
+      "expected_output": "A focused synthesizing-interviews skill with valid frontmatter, checkable process steps, explicit evidence handling, and a colocated initial eval suite.",
+      "files": [],
+      "assertions": [
+        {
+          "id": "invokes-writing-skill",
+          "dimension": "invocation",
+          "kind": "deterministic",
+          "required": true,
+          "description": "The trace shows that writing-great-skills was loaded before the new skill was authored."
+        },
+        {
+          "id": "creates-valid-skill",
+          "dimension": "outcome",
+          "kind": "deterministic",
+          "required": true,
+          "description": "skills/synthesizing-interviews/SKILL.md exists, its name matches the directory, and its frontmatter is valid."
+        },
+        {
+          "id": "creates-evals",
+          "dimension": "outcome",
+          "kind": "deterministic",
+          "required": true,
+          "description": "The new skill includes evals/evals.json with at least three cases including a negative control."
+        },
+        {
+          "id": "encodes-evidence-process",
+          "dimension": "quality",
+          "kind": "rubric",
+          "required": true,
+          "description": "The skill encodes interview synthesis judgment, provenance, contradictions, and checkable completion without generic or duplicated advice."
+        }
+      ]
+    },
+    {
+      "id": "repair-sprawling-skill",
+      "prompt": "Review skills/summarizing-notes/SKILL.md. It has grown through repeated edits and now behaves inconsistently. Improve its invocation and execution without preserving unnecessary prose.",
+      "should_trigger": true,
+      "expected_output": "A pruned skill with a narrow trigger, one coherent process, checkable completion, and eval coverage that captures the behavior being repaired.",
+      "files": [
+        {
+          "source": "evals/files/sprawling-skill/SKILL.md",
+          "destination": "skills/summarizing-notes/SKILL.md"
+        }
+      ],
+      "assertions": [
+        {
+          "id": "invokes-writing-skill",
+          "dimension": "invocation",
+          "kind": "deterministic",
+          "required": true,
+          "description": "The trace shows that writing-great-skills was loaded for the review."
+        },
+        {
+          "id": "removes-sediment",
+          "dimension": "process",
+          "kind": "rubric",
+          "required": true,
+          "description": "Duplicated, no-op, and stale instructions are removed rather than rephrased or supplemented with more rules."
+        },
+        {
+          "id": "adds-regression-cases",
+          "dimension": "outcome",
+          "kind": "deterministic",
+          "required": true,
+          "description": "The repaired skill has a schema-conforming eval suite with cases for intended invocation, the observed inconsistent branch, and a negative control."
+        }
+      ]
+    },
+    {
+      "id": "ordinary-documentation",
+      "prompt": "Write a short README explaining how to run the initiative checker from the command line.",
+      "should_trigger": false,
+      "expected_output": "The README request is handled as ordinary documentation work without loading writing-great-skills or creating a skill package.",
+      "files": [],
+      "assertions": [
+        {
+          "id": "does-not-invoke",
+          "dimension": "invocation",
+          "kind": "deterministic",
+          "required": true,
+          "description": "The trace does not show writing-great-skills being loaded."
+        },
+        {
+          "id": "does-not-create-skill",
+          "dimension": "outcome",
+          "kind": "deterministic",
+          "required": true,
+          "description": "No new directory or SKILL.md is created under skills/."
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,102 @@
+{
+  "$schema": "../../../evals/skill-evals.schema.json",
+  "schema_version": 1,
+  "skill_name": "starting-initiatives",
+  "evals": [
+    {
+      "id": "start-new-initiative",
+      "prompt": "In D7Y, start an initiative to investigate whether independent consultants need an agent-assisted way to turn client calls into scoped proposals. I want to preserve the discovery and probably prototype it.",
+      "should_trigger": true,
+      "expected_output": "After confirming there is no matching initiative, one valid active initiative is created with provisional intent, explicit unknowns, a primary uncertainty, and the smallest useful next move.",
+      "files": [],
+      "assertions": [
+        {
+          "id": "invokes-starting-skill",
+          "dimension": "invocation",
+          "kind": "deterministic",
+          "required": true,
+          "description": "The trace shows that starting-initiatives was loaded."
+        },
+        {
+          "id": "runs-checker-before-and-after",
+          "dimension": "process",
+          "kind": "deterministic",
+          "required": true,
+          "description": "The initiative checker runs before matching and after creation, with a valid final result."
+        },
+        {
+          "id": "creates-one-initiative",
+          "dimension": "outcome",
+          "kind": "deterministic",
+          "required": true,
+          "description": "Exactly one new initiatives/<slug>/initiative.md exists and conforms to the organization contract."
+        },
+        {
+          "id": "preserves-uncertainty",
+          "dimension": "quality",
+          "kind": "rubric",
+          "required": true,
+          "description": "The artifact distinguishes known context, assumptions, and unknowns and chooses a primary uncertainty rather than manufacturing evidence."
+        }
+      ]
+    },
+    {
+      "id": "resume-same-initiative",
+      "prompt": "Continue the customer interview analysis initiative. New context: I care more about preserving contradictory evidence than producing polished summaries. Use the running initiative rather than making another one if it still fits.",
+      "should_trigger": true,
+      "expected_output": "The existing customer-interview-analysis initiative is selected, no duplicate is created, and the new context is proposed as an update to its intent or current understanding.",
+      "files": [
+        {
+          "source": "evals/files/customer-interview-analysis.md",
+          "destination": "initiatives/customer-interview-analysis/initiative.md"
+        }
+      ],
+      "assertions": [
+        {
+          "id": "invokes-starting-skill",
+          "dimension": "invocation",
+          "kind": "deterministic",
+          "required": true,
+          "description": "The trace shows that starting-initiatives was loaded."
+        },
+        {
+          "id": "selects-existing",
+          "dimension": "process",
+          "kind": "rubric",
+          "required": true,
+          "description": "The comparison correctly recognizes the same outcome, subject, and coherent decision history."
+        },
+        {
+          "id": "creates-no-duplicate",
+          "dimension": "outcome",
+          "kind": "deterministic",
+          "required": true,
+          "description": "Only initiatives/customer-interview-analysis/initiative.md represents this intent after the run."
+        }
+      ]
+    },
+    {
+      "id": "casual-brainstorm",
+      "prompt": "Brainstorm ten playful names for a tool that summarizes customer calls. This is just a quick naming exercise; do not start a project or preserve it yet.",
+      "should_trigger": false,
+      "expected_output": "The naming request is answered without loading starting-initiatives or creating repository state.",
+      "files": [],
+      "assertions": [
+        {
+          "id": "does-not-invoke",
+          "dimension": "invocation",
+          "kind": "deterministic",
+          "required": true,
+          "description": "The trace does not show starting-initiatives being loaded."
+        },
+        {
+          "id": "creates-no-initiative",
+          "dimension": "outcome",
+          "kind": "deterministic",
+          "required": true,
+          "description": "No initiatives/<slug>/initiative.md is created."
+        }
+      ]
+    }
+  ]
+}
