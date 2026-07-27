@@ -29,6 +29,7 @@ Command groups:
   validate                     Validate skill evals, then initiatives.
   validate evals [paths...]    Validate skill eval definitions (forwards args).
   validate initiatives [opts]  Validate initiatives (forwards --root, --json).
+  dev plans [--all|--done]     List active, all, or completed plans.
   dev delegate [opts] <prompt> Delegate a Claude Code implementation handoff.
 
 The underlying scripts remain directly executable. Leaf options are not
@@ -45,6 +46,53 @@ die_usage() {
   printf 'd7y: %s\n\n' "$*" >&2
   usage >&2
   exit 2
+}
+
+list_plans() {
+  local mode="active"
+  local path status
+
+  [[ $# -le 1 ]] || die_usage "dev plans accepts at most one option"
+  case "${1:-}" in
+    "") ;;
+    --all) mode="all" ;;
+    --done) mode="done" ;;
+    -h|--help)
+      cat <<'EOF'
+Usage: d7y dev plans [--all|--done]
+
+List plans as "<status> <path>" in path order.
+
+Options:
+  --all   Include completed plans.
+  --done  List only completed plans.
+EOF
+      return 0
+      ;;
+    *) die_usage "unknown dev plans option: ${1:-}" ;;
+  esac
+
+  for path in docs/plans/*.md; do
+    [[ -e "$path" ]] || continue
+    status="$(awk '
+      NR == 1 && $0 != "---" { exit }
+      NR > 1 && $0 == "---" { exit }
+      /^status:[[:space:]]*/ {
+        sub(/^status:[[:space:]]*/, "")
+        print
+        exit
+      }
+    ' "$path")"
+    [[ -n "$status" ]] || status="unknown"
+
+    if [[ "$mode" == "active" && "$status" == "done" ]]; then
+      continue
+    fi
+    if [[ "$mode" == "done" && "$status" != "done" ]]; then
+      continue
+    fi
+    printf '%-8s %s\n' "$status" "$path"
+  done
 }
 
 # Every underlying script is invoked from the repository root.
@@ -80,6 +128,10 @@ case "${1:-}" in
   dev)
     shift
     case "${1:-}" in
+      plans)
+        shift
+        list_plans "$@"
+        ;;
       delegate)
         shift
         exec scripts/delegate-claude.sh "$@"

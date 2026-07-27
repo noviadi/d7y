@@ -25,6 +25,9 @@ Start with the [workbench charter](./docs/discovery-workbench.md) and [agent-nat
 
 ```sh
 ./d7y validate                    # validate skill evals, then initiatives
+./d7y dev plans                   # list plans that are not done
+./d7y dev plans --all             # include completed plans
+./d7y dev plans --done            # list only completed plans
 ./d7y dev delegate <prompt-path>  # delegate a Claude Code implementation handoff
 ```
 
