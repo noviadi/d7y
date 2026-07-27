@@ -31,10 +31,12 @@ from run_eval import (
     check_git_tree_mode,
     validate_path_for_source,
     validate_path_for_destination,
+    prevalidate_staging_map,
     create_isolated_workspace,
-    create_session_plugin,
+    create_authentic_session_plugin,
     create_control_plugin,
-    create_settings_file,
+    create_canary_skills,
+    create_settings_file_with_canaries,
     build_scrubbed_env,
     create_d7y_capability_installation,
     stage_workspace_seed,
@@ -46,12 +48,15 @@ from run_eval import (
     parse_stream_json,
     validate_required_events,
     check_skill_invocation,
+    check_canary_leakage,
     run_deterministic_checks,
     EXPECTED_MODEL,
     EXPECTED_PERMISSION_MODE,
     EXPECTED_MCP_SERVERS,
-    POSITIVE_TOOLS,
-    BASELINE_TOOLS,
+    EXPECTED_TOOLS_ARG,
+    SESSION_PLUGIN_NAME,
+    FAKE_GLOBAL_SKILL_NAME,
+    PROJECT_INSTRUCTION_CANARY,
 )
 
 
@@ -201,8 +206,9 @@ class TestGitObjectResolution(unittest.TestCase):
 
     def test_resolve_git_object_success(self):
         """Test reading a Git object."""
-        content = resolve_git_object(self.source_repo, self.commit, "test.txt")
+        content, object_id = resolve_git_object(self.source_repo, self.commit, "test.txt")
         self.assertEqual(content, b"test")
+        self.assertEqual(len(object_id), 40)  # Object ID should be full SHA
 
     def test_resolve_git_object_not_exists(self):
         """Test reading a non-existent object fails."""
@@ -228,6 +234,8 @@ class TestPathValidation(unittest.TestCase):
         self.temp_dir = Path(tempfile.mkdtemp())
         self.source_repo = self.temp_dir / "source"
         self.source_repo.mkdir()
+        self.workspace = self.temp_dir / "workspace"
+        self.workspace.mkdir()
 
     def tearDown(self):
         if self.temp_dir.exists():
@@ -265,6 +273,36 @@ class TestPathValidation(unittest.TestCase):
         """Test control path collision rejected."""
         with self.assertRaises(ValueError):
             validate_path_for_destination(Path("settings.json"))
+
+    def test_prevalidate_staging_map(self):
+        """Test complete staging map validation."""
+        files = [
+            {"source": "test.txt", "destination": "test.txt"},
+            {"source": "other.txt", "destination": "other.txt"},
+        ]
+        prevalidate_staging_map(files, self.source_repo, self.workspace)  # Should not raise
+
+    def test_prevalidate_duplicate_destinations(self):
+        """Test duplicate destination detection."""
+        files = [
+            {"source": "test1.txt", "destination": "test.txt"},
+            {"source": "test2.txt", "destination": "test.txt"},
+        ]
+        with self.assertRaises(ValueError) as context:
+            prevalidate_staging_map(files, self.source_repo, self.workspace)
+        self.assertIn("Duplicate destination", str(context.exception))
+
+    def test_prevalidate_existing_file_overwrite(self):
+        """Test existing file overwrite detection."""
+        # Create an existing file
+        (self.workspace / "existing.txt").write_text("existing")
+
+        files = [
+            {"source": "test.txt", "destination": "existing.txt"},
+        ]
+        with self.assertRaises(ValueError) as context:
+            prevalidate_staging_map(files, self.source_repo, self.workspace)
+        self.assertIn("already exists", str(context.exception))
 
 
 class TestWorkspaceIsolation(unittest.TestCase):
@@ -362,8 +400,8 @@ class TestWorkspaceIsolation(unittest.TestCase):
         self.assertIn("already exists", str(context.exception))
 
 
-class TestPluginMaterialization(unittest.TestCase):
-    """Test plugin materialization and treatment separation."""
+class TestAuthenticPluginMaterialization(unittest.TestCase):
+    """Test authentic plugin materialization with .claude-plugin layout."""
 
     def setUp(self):
         self.temp_dir = Path(tempfile.mkdtemp())
@@ -390,14 +428,17 @@ class TestPluginMaterialization(unittest.TestCase):
         if self.source_repo.exists():
             shutil.rmtree(self.source_repo)
 
-    def test_create_session_plugin_with_skill(self):
-        """Test creating session plugin with target skill."""
+    def test_create_authentic_session_plugin_with_skill(self):
+        """Test creating authentic session plugin with target skill."""
         workspace = self.temp_dir / "workspace"
         workspace.mkdir()
 
-        plugin_dir = create_session_plugin(workspace, "test-skill", True, self.source_repo, self.commit)
+        plugin_dir = create_authentic_session_plugin(workspace, "test-skill", True, self.source_repo, self.commit)
 
+        # Verify authentic .claude-plugin directory name
+        self.assertEqual(plugin_dir.name, ".claude-plugin")
         self.assertTrue(plugin_dir.exists())
+
         self.assertTrue((plugin_dir / "plugin.json").exists())
         self.assertTrue((plugin_dir / "SKILL.md").exists())
 
@@ -406,30 +447,135 @@ class TestPluginMaterialization(unittest.TestCase):
         self.assertEqual(plugin_json["name"], "d7y-eval-session")
         self.assertIn("test-skill", [s["name"] for s in plugin_json.get("skills", [])])
 
-    def test_create_session_plugin_without_skill(self):
-        """Test creating session plugin without target skill."""
+    def test_create_authentic_session_plugin_without_skill(self):
+        """Test creating authentic session plugin without target skill."""
         workspace = self.temp_dir / "workspace"
         workspace.mkdir()
 
-        plugin_dir = create_session_plugin(workspace, "test-skill", False, self.source_repo, self.commit)
+        plugin_dir = create_authentic_session_plugin(workspace, "test-skill", False, self.source_repo, self.commit)
 
         self.assertTrue(plugin_dir.exists())
         self.assertTrue((plugin_dir / "plugin.json").exists())
         self.assertFalse((plugin_dir / "SKILL.md").exists())
 
-    def test_create_control_plugin(self):
-        """Test creating control plugin for baseline."""
+    def test_create_control_plugin_authentic_layout(self):
+        """Test creating control plugin with authentic layout."""
         workspace = self.temp_dir / "workspace"
         workspace.mkdir()
 
         plugin_dir = create_control_plugin(workspace)
 
+        # Verify authentic .claude-plugin directory name
+        self.assertEqual(plugin_dir.name, ".claude-plugin")
         self.assertTrue(plugin_dir.exists())
         self.assertTrue((plugin_dir / "plugin.json").exists())
 
         plugin_json = json.loads((plugin_dir / "plugin.json").read_text())
         self.assertEqual(plugin_json["name"], "d7y-eval-control")
         self.assertEqual(len(plugin_json.get("skills", [])), 0)
+
+
+class TestCanarySkills(unittest.TestCase):
+    """Test suppression canary creation and leakage detection."""
+
+    def setUp(self):
+        self.temp_dir = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        if self.temp_dir.exists():
+            shutil.rmtree(self.temp_dir)
+
+    def test_create_canary_skills(self):
+        """Test creating suppression canary skills."""
+        canary_dir = create_canary_skills(self.temp_dir)
+
+        self.assertTrue(canary_dir.exists())
+        self.assertTrue((canary_dir / "SKILL.md").exists())
+
+        # Verify fake global skill content
+        skill_content = (canary_dir / "SKILL.md").read_text()
+        self.assertIn(FAKE_GLOBAL_SKILL_NAME, skill_content)
+        self.assertIn("canary", skill_content.lower())
+
+    def test_check_canary_leakage_with_skill_discovery(self):
+        """Test canary detection when fake skill is discovered."""
+        events = [
+            {
+                "type": "system",
+                "subtype": "init",
+                "skills": ["doctor", FAKE_GLOBAL_SKILL_NAME]
+            }
+        ]
+
+        canary_ok, issues = check_canary_leakage(events, self.temp_dir)
+        self.assertFalse(canary_ok)
+        self.assertTrue(any("canary global skill discovered" in issue.lower() for issue in issues))
+
+    def test_check_canary_leakage_with_skill_invocation(self):
+        """Test canary detection when fake skill is invoked."""
+        events = [
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "Skill",
+                            "input": {"skill": FAKE_GLOBAL_SKILL_NAME}
+                        }
+                    ]
+                }
+            }
+        ]
+
+        canary_ok, issues = check_canary_leakage(events, self.temp_dir)
+        self.assertFalse(canary_ok)
+        self.assertTrue(any("canary global skill invoked" in issue.lower() for issue in issues))
+
+    def test_check_canary_leakage_with_instruction_leakage(self):
+        """Test canary detection when project instruction leaks."""
+        events = [
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": f"Some response with {PROJECT_INSTRUCTION_CANARY} visible"
+                        }
+                    ]
+                }
+            }
+        ]
+
+        canary_ok, issues = check_canary_leakage(events, self.temp_dir)
+        self.assertFalse(canary_ok)
+        self.assertTrue(any("project instruction canary" in issue.lower() for issue in issues))
+
+    def test_check_canary_leakage_clean(self):
+        """Test canary check passes with clean events."""
+        events = [
+            {
+                "type": "system",
+                "subtype": "init",
+                "skills": ["doctor"]
+            },
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Clean response without canaries"
+                        }
+                    ]
+                }
+            }
+        ]
+
+        canary_ok, issues = check_canary_leakage(events, self.temp_dir)
+        self.assertTrue(canary_ok)
+        self.assertEqual(len(issues), 0)
 
 
 class TestEnvironmentScrubbing(unittest.TestCase):
@@ -451,7 +597,7 @@ class TestEnvironmentScrubbing(unittest.TestCase):
         """Test basic environment scrubbing."""
         workspace = self.temp_dir / "workspace"
         workspace.mkdir()
-        plugin_dir = workspace / "plugin"
+        plugin_dir = workspace / ".claude-plugin"
         plugin_dir.mkdir()
         settings_path = workspace / "settings.json"
         settings_path.write_text("{}")
@@ -472,7 +618,7 @@ class TestEnvironmentScrubbing(unittest.TestCase):
         """Test environment scrubbing rejects path leaks."""
         workspace = self.temp_dir / "workspace"
         workspace.mkdir()
-        plugin_dir = workspace / "plugin"
+        plugin_dir = workspace / ".claude-plugin"
         plugin_dir.mkdir()
         settings_path = workspace / "settings.json"
         settings_path.write_text("{}")
@@ -491,7 +637,7 @@ class TestEnvironmentScrubbing(unittest.TestCase):
         """Test environment provenance tracking."""
         workspace = self.temp_dir / "workspace"
         workspace.mkdir()
-        plugin_dir = workspace / "plugin"
+        plugin_dir = workspace / ".claude-plugin"
         plugin_dir.mkdir()
         settings_path = workspace / "settings.json"
         settings_path.write_text("{}")
@@ -510,7 +656,6 @@ class TestExecutableResolution(unittest.TestCase):
 
     def setUp(self):
         self.temp_dir = Path(tempfile.mkdtemp())
-        self.fake_claude = FakeClaudeCode(self.temp_dir)
 
     def tearDown(self):
         if self.temp_dir.exists():
@@ -549,14 +694,14 @@ class TestExecutableResolution(unittest.TestCase):
 
 
 class TestCommandBuilding(unittest.TestCase):
-    """Test Claude Code command building."""
+    """Test Claude Code command building with exact tool syntax."""
 
     def setUp(self):
         self.temp_dir = Path(tempfile.mkdtemp())
         self.fake_claude = FakeClaudeCode(self.temp_dir)
         self.workspace = self.temp_dir / "workspace"
         self.workspace.mkdir()
-        self.plugin_dir = self.workspace / "plugin"
+        self.plugin_dir = self.workspace / ".claude-plugin"
         self.plugin_dir.mkdir()
         self.settings_path = self.workspace / "settings.json"
         self.settings_path.write_text("{}")
@@ -571,6 +716,7 @@ class TestCommandBuilding(unittest.TestCase):
             self.fake_claude.executable_path,
             self.workspace,
             self.plugin_dir,
+            None,
             self.settings_path,
             "Test prompt",
             True,
@@ -586,10 +732,12 @@ class TestCommandBuilding(unittest.TestCase):
         self.assertIn("--permission-mode", cmd)
         self.assertIn("dontAsk", cmd)
 
-        # Check tools
-        for tool in POSITIVE_TOOLS:
-            self.assertIn("--allow-tool", cmd)
-            self.assertIn(tool, cmd)
+        # Check exact tools argument (not --allow-tool repeats)
+        self.assertIn("--tools", cmd)
+        self.assertIn(EXPECTED_TOOLS_ARG, cmd)
+
+        # Verify no --allow-tool arguments
+        self.assertNotIn("--allow-tool", cmd)
 
         # Check prompt
         self.assertIn("Test prompt", cmd)
@@ -600,15 +748,15 @@ class TestCommandBuilding(unittest.TestCase):
             self.fake_claude.executable_path,
             self.workspace,
             self.plugin_dir,
+            None,
             self.settings_path,
             "Test prompt",
             False,
         )
 
-        # Check tools for baseline
-        for tool in BASELINE_TOOLS:
-            self.assertIn("--allow-tool", cmd)
-            self.assertIn(tool, cmd)
+        # Should still have the exact tools argument
+        self.assertIn("--tools", cmd)
+        self.assertIn(EXPECTED_TOOLS_ARG, cmd)
 
 
 class TestEventParsing(unittest.TestCase):
@@ -638,7 +786,7 @@ class TestEventParsing(unittest.TestCase):
                 "model": EXPECTED_MODEL,
                 "permissionMode": EXPECTED_PERMISSION_MODE,
                 "mcp_servers": EXPECTED_MCP_SERVERS,
-                "tools": POSITIVE_TOOLS,
+                "tools": EXPECTED_TOOLS_ARG.split(","),
                 "skills": ["test-skill:invoke", "doctor"],
                 "plugins": [{"name": "d7y-eval-session"}],
             },
@@ -662,7 +810,7 @@ class TestEventParsing(unittest.TestCase):
                 "type": "system",
                 "subtype": "init",
                 "model": "wrong-model",
-                "tools": POSITIVE_TOOLS,
+                "tools": EXPECTED_TOOLS_ARG.split(","),
                 "skills": ["doctor"],
                 "mcp_servers": EXPECTED_MCP_SERVERS,
                 "permissionMode": EXPECTED_PERMISSION_MODE,
@@ -757,8 +905,7 @@ class TestCommittedFixtureParsing(unittest.TestCase):
         self.assertEqual(events[0]["type"], "system")
         self.assertEqual(events[0]["subtype"], "init")
 
-        # The committed fixture uses only ["Skill"] tools, not the full set
-        # This represents the observed spike behavior, so validate accordingly
+        # Check fixture uses only ["Skill"] tools, not full set
         init_event = events[0]
         self.assertEqual(init_event["model"], EXPECTED_MODEL)
         self.assertEqual(init_event["permissionMode"], EXPECTED_PERMISSION_MODE)

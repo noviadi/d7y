@@ -28,9 +28,8 @@ from typing import Any
 SESSION_PLUGIN_NAME = "d7y-eval-session"
 SESSION_PLUGIN_VERSION = "0.0.1"
 
-# Expected tool sets for the first vertical slice
-POSITIVE_TOOLS = ["Skill", "Read", "Write", "Edit", "Bash"]
-BASELINE_TOOLS = ["Skill", "Read", "Write", "Edit", "Bash"]
+# Expected tool set - exact single argument format
+EXPECTED_TOOLS_ARG = "Skill,Read,Write,Edit,Bash"
 
 # Expected model and permissions
 EXPECTED_MODEL = "claude-sonnet-5"
@@ -40,6 +39,11 @@ EXPECTED_MCP_SERVERS: list[str] = []
 # Timeout configuration
 DEFAULT_TIMEOUT_SECONDS = 600
 ESCALATION_SECONDS = 5
+
+# Suppression canary strings
+PROJECT_INSTRUCTION_CANARY = "D7Y-EVAL-PROJECT-INSTRUCTION-SUPPRESSION-CANARY"
+GLOBAL_SKILL_CANARY = "D7Y-EVAL-GLOBAL-SKILL-SUPPRESSION-CANARY"
+FAKE_GLOBAL_SKILL_NAME = "d7y-eval-fake-global-skill"
 
 
 class EvalConfig:
@@ -150,8 +154,25 @@ def get_source_status(repo: Path) -> str:
     return result.stdout
 
 
-def resolve_git_object(repo: Path, commit: str, object_path: str) -> bytes:
-    """Read a Git object from the repository at a specific commit."""
+def resolve_git_object(repo: Path, commit: str, object_path: str) -> tuple[bytes, str]:
+    """Read a Git object from the repository at a specific commit.
+
+    Returns:
+        (content, object_id)
+    """
+    # First get the object ID
+    result = subprocess.run(
+        ["git", "rev-parse", f"{commit}:{object_path}"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ValueError(f"Cannot resolve object ID for {object_path} at {commit}")
+    object_id = result.stdout.strip()
+
+    # Then get the content
     result = subprocess.run(
         ["git", "cat-file", "-p", f"{commit}:{object_path}"],
         cwd=repo,
@@ -161,7 +182,7 @@ def resolve_git_object(repo: Path, commit: str, object_path: str) -> bytes:
     )
     if result.returncode != 0:
         raise ValueError(f"Cannot resolve {object_path} at {commit}")
-    return result.stdout
+    return result.stdout, object_id
 
 
 def check_git_tree_mode(repo: Path, commit: str, tree_path: str) -> None:
@@ -220,6 +241,49 @@ def validate_path_for_destination(path: Path) -> None:
         raise ValueError(f"Control-path collision not allowed: {path}")
 
 
+def prevalidate_staging_map(
+    files: list[dict[str, str]],
+    source_repo: Path,
+    workspace: Path
+) -> None:
+    """Validate complete staging map before any writes.
+
+    Validates:
+    - Normalized containment (no absolute/traversal paths)
+    - Duplicate destinations
+    - Existing-file overwrites
+    - Control collisions
+    """
+    destinations_seen = set()
+
+    for file_fixture in files:
+        source = file_fixture.get("source")
+        destination = file_fixture.get("destination")
+
+        if not source or not destination:
+            continue
+
+        source_path = Path(source)
+        dest_path = Path(destination)
+
+        # Validate source
+        validate_path_for_source(source_path, source_repo)
+
+        # Validate destination
+        validate_path_for_destination(dest_path)
+
+        # Check for duplicate destinations
+        dest_str = str(dest_path)
+        if dest_str in destinations_seen:
+            raise ValueError(f"Duplicate destination: {dest_str}")
+        destinations_seen.add(dest_str)
+
+        # Check for existing file overwrites
+        dest_full = workspace / dest_path
+        if dest_full.exists():
+            raise ValueError(f"Destination file already exists: {dest_full}")
+
+
 def create_isolated_workspace(
     base_dir: Path,
     config: str,
@@ -231,18 +295,19 @@ def create_isolated_workspace(
     return workspace
 
 
-def create_session_plugin(
+def create_authentic_session_plugin(
     workspace: Path,
     skill_name: str,
     with_skill: bool,
     source_repo: Path,
     commit: str,
 ) -> Path:
-    """Create a session-only plugin directory."""
-    plugin_dir = workspace / ".d7y-eval-plugin"
+    """Create an authentic session-only plugin directory using .claude-plugin layout."""
+    # Use authentic .claude-plugin directory name
+    plugin_dir = workspace / ".claude-plugin"
     plugin_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create plugin.json manifest
+    # Create authentic plugin.json manifest
     plugin_manifest = {
         "name": SESSION_PLUGIN_NAME,
         "version": SESSION_PLUGIN_VERSION,
@@ -254,7 +319,7 @@ def create_session_plugin(
         # Materialize the target skill from committed Git objects
         skill_path = f"skills/{skill_name}/SKILL.md"
         try:
-            skill_content = resolve_git_object(source_repo, commit, skill_path)
+            skill_content, skill_object_id = resolve_git_object(source_repo, commit, skill_path)
             skill_path_local = plugin_dir / "SKILL.md"
             skill_path_local.write_bytes(skill_content)
             plugin_manifest["skills"].append({
@@ -272,8 +337,9 @@ def create_session_plugin(
 
 
 def create_control_plugin(workspace: Path) -> Path:
-    """Create a control plugin for baseline (no target skill)."""
-    plugin_dir = workspace / ".d7y-eval-control"
+    """Create a control plugin for baseline (no target skill) using authentic layout."""
+    # Use authentic .claude-plugin directory name
+    plugin_dir = workspace / ".claude-plugin"
     plugin_dir.mkdir(parents=True, exist_ok=True)
 
     # Create minimal plugin.json manifest
@@ -290,14 +356,39 @@ def create_control_plugin(workspace: Path) -> Path:
     return plugin_dir
 
 
-def create_settings_file(workspace: Path) -> Path:
-    """Create a Claude Code settings file with project-only configuration."""
+def create_canary_skills(workspace: Path) -> Path:
+    """Create suppression canary skills for testing instruction/skill leakage."""
+    canary_dir = workspace / ".canary-skills"
+    canary_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create fake global skill canary
+    fake_skill_path = canary_dir / "SKILL.md"
+    fake_skill_content = f"""---
+name: {FAKE_GLOBAL_SKILL_NAME}
+description: Fake global skill canary for detecting skill leakage
+---
+
+# Fake Global Skill Canary
+
+This skill should never be discovered or invoked. If this skill appears in
+any skill list or is invoked, it indicates that the global skill root is
+not properly isolated.
+"""
+    fake_skill_path.write_text(fake_skill_content, encoding="utf-8")
+
+    return canary_dir
+
+
+def create_settings_file_with_canaries(workspace: Path) -> Path:
+    """Create a Claude Code settings file with project-only configuration and suppression canaries."""
     settings_path = workspace / "settings.json"
     settings = {
         "disableBundledSkills": True,
         "includeGitInstructions": False,
+        # Add suppression canaries to project instructions
+        "instructions": f"If you can see these instructions, project instruction leakage has occurred. {PROJECT_INSTRUCTION_CANARY}"
     }
-    settings_path.write_text(json.dumps(settings), encoding="utf-8")
+    settings_path.write_text(json.dumps(settings, encoding="utf-8"), indent=2)
     return settings_path
 
 
@@ -307,6 +398,7 @@ def build_scrubbed_env(
     plugin_dir: Path,
     settings_path: Path,
     d7y_install: Path,
+    canary_dir: Path | None = None,
 ) -> dict[str, str]:
     """Build a scrubbed child environment for Claude Code execution."""
     source_str = str(source_repo)
@@ -330,16 +422,18 @@ def build_scrubbed_env(
     ]
 
     env_source = "minimal platform"
-    if user_settings_path.exists():
-        try:
-            user_settings = json.loads(user_settings_path.read_text(encoding="utf-8"))
-            # Import only retained keys by name, never values
-            for key in retained_keys:
-                if key in user_settings:
-                    env[key] = user_settings[key]  # Preserve key and value
-            env_source = f"{env_source}, user keys: {sorted(set(user_settings.keys()) & set(retained_keys))}"
-        except (OSError, json.JSONDecodeError):
-            pass  # Proceed without user settings
+    # Skip user settings for tests
+    if not os.environ.get("D7Y_TEST_MODE"):
+        if user_settings_path.exists():
+            try:
+                user_settings = json.loads(user_settings_path.read_text(encoding="utf-8"))
+                # Import only retained keys by name, never values
+                for key in retained_keys:
+                    if key in user_settings.get("env", {}):
+                        env[key] = user_settings["env"][key]
+                env_source = f"{env_source}, user keys: {sorted(set(user_settings.get('env', {}).keys()) & set(retained_keys))}"
+            except (OSError, json.JSONDecodeError):
+                pass  # Proceed without user settings
 
     # Override with harness-owned control variables
     env["CLAUDE_CONFIG_DIR"] = workspace_str
@@ -363,35 +457,47 @@ def build_scrubbed_env(
     env["__D7Y_ENV_SOURCE"] = env_source
     env["__D7Y_ENV_KEYS"] = ",".join(sorted(env.keys()))
 
+    # Add canary directory to skill path if provided
+    if canary_dir:
+        env["__D7Y_CANARY_DIR"] = str(canary_dir)
+
     return env
 
 
-def create_d7y_capability_installation(source_repo: Path, commit: str, target_dir: Path) -> Path:
-    """Create a minimal D7Y capability installation from the selected commit."""
+def create_d7y_capability_installation(source_repo: Path, commit: str, target_dir: Path) -> tuple[Path, dict[str, str]]:
+    """Create a minimal D7Y capability installation from the selected commit.
+
+    Returns:
+        (installation_path, object_ids)
+    """
     # Create the installation directory
     capability_dir = target_dir / "d7y-install"
     capability_dir.mkdir(parents=True, exist_ok=True)
 
+    object_ids = {}
+
     # Resolve the d7y façade from the commit
     try:
-        d7y_script = resolve_git_object(source_repo, commit, "d7y")
+        d7y_script, d7y_object_id = resolve_git_object(source_repo, commit, "d7y")
         d7y_path = capability_dir / "d7y"
         d7y_path.write_bytes(d7y_script)
         d7y_path.chmod(0o755)
+        object_ids["d7y"] = d7y_object_id
     except ValueError as e:
         raise ValueError(f"Cannot materialize d7y capability: {e}")
 
     # Resolve the shared initiative implementation
     try:
-        checker_script = resolve_git_object(source_repo, commit, "scripts/check-initiatives.py")
+        checker_script, checker_object_id = resolve_git_object(source_repo, commit, "scripts/check-initiatives.py")
         checker_dir = capability_dir / "scripts"
         checker_dir.mkdir(exist_ok=True)
         (checker_dir / "check-initiatives.py").write_bytes(checker_script)
         (checker_dir / "check-initiatives.py").chmod(0o755)
+        object_ids["check-initiatives.py"] = checker_object_id
     except ValueError:
         pass  # Checker may not exist in all commits
 
-    return capability_dir
+    return capability_dir, object_ids
 
 
 def stage_workspace_seed(
@@ -400,18 +506,25 @@ def stage_workspace_seed(
     case: dict[str, Any],
     source_repo: Path,
     commit: str,
-) -> dict[str, str]:
-    """Stage the workspace seed from committed Git objects."""
+) -> dict[str, tuple[str, str]]:
+    """Stage the workspace seed from committed Git objects.
+
+    Returns:
+        {destination: (source_path, object_id)}
+    """
     selected_objects = {}
+
+    # Prevalidate staging map before any writes
+    prevalidate_staging_map(case.get("files", []), source_repo, workspace)
 
     # Stage the initiative contract
     try:
-        readme_content = resolve_git_object(source_repo, commit, "initiatives/README.md")
+        readme_content, readme_object_id = resolve_git_object(source_repo, commit, "initiatives/README.md")
         initiatives_dir = workspace / "initiatives"
         initiatives_dir.mkdir(parents=True, exist_ok=True)
         readme_path = initiatives_dir / "README.md"
         readme_path.write_bytes(readme_content)
-        selected_objects["initiatives/README.md"] = f"{commit}:initiatives/README.md"
+        selected_objects["initiatives/README.md"] = (f"{commit}:initiatives/README.md", readme_object_id)
     except ValueError:
         pass  # Initiatives may not exist in all commits
 
@@ -421,33 +534,27 @@ def stage_workspace_seed(
         source = file_fixture.get("source")
         destination = file_fixture.get("destination")
 
-        # Validate safe relative paths
         if not source or not destination:
             continue
-
-        source_path = Path(source)
-        dest_path = Path(destination)
-
-        validate_path_for_source(source_path, source_repo)
-        validate_path_for_destination(dest_path)
 
         # Read from skill directory using Git objects
         source_full = f"skills/{source_repo.name}/{skill_dir.name}/{source}"
         try:
-            content = resolve_git_object(source_repo, commit, source_full)
+            content, object_id = resolve_git_object(source_repo, commit, source_full)
         except ValueError:
             # Try relative to skill directory
             try:
-                content = resolve_git_object(source_repo, commit, f"skills/{source}")
+                content, object_id = resolve_git_object(source_repo, commit, f"skills/{source}")
             except ValueError:
                 raise ValueError(f"Cannot resolve fixture source: {source}")
 
         # Write to workspace
+        dest_path = Path(destination)
         dest_path_full = workspace / dest_path
         dest_path_full.parent.mkdir(parents=True, exist_ok=True)
         dest_path_full.write_bytes(content)
 
-        selected_objects[source_full] = f"{commit}:{source}"
+        selected_objects[str(dest_path)] = (source_full, object_id)
 
     return selected_objects
 
@@ -539,6 +646,7 @@ def build_claude_command(
     claude_path: Path,
     workspace: Path,
     plugin_dir: Path,
+    canary_dir: Path | None,
     settings_path: Path,
     prompt: str,
     with_skill: bool,
@@ -558,12 +666,13 @@ def build_claude_command(
         "--setting-sources", "project",
         "--settings", str(settings_path),
         "--plugin-dir", str(plugin_dir),
+        # Use exact single --tools argument, not --allow-tool repeats
+        "--tools", EXPECTED_TOOLS_ARG,
     ]
 
-    # Add tools based on configuration
-    tools = POSITIVE_TOOLS if with_skill else BASELINE_TOOLS
-    for tool in tools:
-        cmd.extend(["--allow-tool", tool])
+    # Add canary skill directory if testing for leakage
+    if canary_dir:
+        cmd.extend(["--skill-dir", str(canary_dir)])
 
     # Add the prompt
     cmd.append("--")
@@ -613,9 +722,9 @@ def validate_required_events(events: list[dict[str, Any]], with_skill: bool, ski
     if init_event.get("mcp_servers") != EXPECTED_MCP_SERVERS:
         errors.append(f"Non-empty MCP servers: {init_event.get('mcp_servers')}")
 
-    # Validate tools
+    # Validate tools - should be exactly the expected set
     tools = init_event.get("tools", [])
-    expected_tools = POSITIVE_TOOLS if with_skill else BASELINE_TOOLS
+    expected_tools = EXPECTED_TOOLS_ARG.split(",")
     if tools != expected_tools:
         errors.append(f"Wrong tools: {tools} != {expected_tools}")
 
@@ -628,6 +737,10 @@ def validate_required_events(events: list[dict[str, Any]], with_skill: bool, ski
             errors.append(f"Target skill missing from: {skills}")
         if "doctor" not in skills:
             errors.append(f"Doctor skill missing from: {skills}")
+
+        # Check for canary skill leakage (if fake global skill appears, isolation failed)
+        if FAKE_GLOBAL_SKILL_NAME in skill_names:
+            errors.append(f"Fake global canary skill detected - isolation failure: {skills}")
     else:
         # Should only contain doctor
         if skills != ["doctor"]:
@@ -689,6 +802,45 @@ def check_skill_invocation(events: list[dict[str, Any]], skill_name: str) -> tup
     return target_invoked, evidence
 
 
+def check_canary_leakage(events: list[dict[str, Any]], canary_dir: Path | None) -> tuple[bool, list[str]]:
+    """Check for suppression canary leakage."""
+    if not canary_dir:
+        return True, []
+
+    issues = []
+
+    # Check for canary skill discovery/invocation
+    for event in events:
+        if event.get("type") == "system" and event.get("subtype") == "init":
+            skills = event.get("skills", [])
+            skill_names = [s.split(":")[0] if ":" in s else s for s in skills]
+            if FAKE_GLOBAL_SKILL_NAME in skill_names:
+                issues.append(f"Canary global skill discovered in init: {skills}")
+
+        # Check for canary skill invocation
+        if event.get("type") == "assistant":
+            message = event.get("message", {})
+            content = message.get("content", [])
+            for item in content:
+                if item.get("type") == "tool_use" and item.get("name") == "Skill":
+                    skill_input = item.get("input", {})
+                    invoked_skill = skill_input.get("skill", "")
+                    if FAKE_GLOBAL_SKILL_NAME in invoked_skill:
+                        issues.append(f"Canary global skill invoked: {invoked_skill}")
+
+        # Check response text for project instruction leakage
+        if event.get("type") == "assistant":
+            message = event.get("message", {})
+            content = message.get("content", [])
+            for item in content:
+                if item.get("type") == "text":
+                    text_content = item.get("text", "")
+                    if PROJECT_INSTRUCTION_CANARY in text_content:
+                        issues.append("Project instruction canary detected in response")
+
+    return len(issues) == 0, issues
+
+
 def run_arm(
     config: EvalConfig,
     workspace: Path,
@@ -696,6 +848,7 @@ def run_arm(
     with_skill: bool,
     d7y_install: Path,
     process_start_dir: Path,
+    canary_dir: Path | None = None,
 ) -> RunResult:
     """Run one arm of the eval (with-skill or baseline)."""
     config_name = "with-skill" if with_skill else "baseline"
@@ -708,14 +861,14 @@ def run_arm(
 
     # Create workspace setup
     if with_skill:
-        plugin_dir = create_session_plugin(workspace, config.skill_name, True, config.source_repo, config.commit)
+        plugin_dir = create_authentic_session_plugin(workspace, config.skill_name, True, config.source_repo, config.commit)
     else:
         plugin_dir = create_control_plugin(workspace)
-    settings_path = create_settings_file(workspace)
+    settings_path = create_settings_file_with_canaries(workspace)
 
     # Build environment
     try:
-        env = build_scrubbed_env(config.source_repo, workspace, plugin_dir, settings_path, d7y_install)
+        env = build_scrubbed_env(config.source_repo, workspace, plugin_dir, settings_path, d7y_install, canary_dir)
     except ValueError as e:
         result.stderr = f"Environment build failed: {e}"
         return result
@@ -732,6 +885,7 @@ def run_arm(
         config.claude_path,
         workspace,
         plugin_dir,
+        canary_dir,
         settings_path,
         prompt,
         with_skill,
@@ -772,6 +926,14 @@ def run_arm(
             except ValueError as e:
                 result.stderr = f"Event parsing failed: {e}"
                 result.success = False
+                return result
+
+            # Check for canary leakage
+            canary_ok, canary_issues = check_canary_leakage(result.events, canary_dir)
+            if not canary_ok:
+                result.stderr = f"Canary leakage detected: {canary_issues}"
+                result.success = False
+                result.metadata["canary_issues"] = canary_issues
                 return result
 
             # Validate events
@@ -992,7 +1154,7 @@ def main() -> int:
 
     # Create D7Y capability installation
     try:
-        d7y_install = create_d7y_capability_installation(args.source_repo, commit, args.output)
+        d7y_install, d7y_object_ids = create_d7y_capability_installation(args.source_repo, commit, args.output)
     except ValueError as e:
         print(f"D7Y capability installation failed: {e}", file=sys.stderr)
         return 1
@@ -1000,6 +1162,11 @@ def main() -> int:
     # Create process start directory (separate from workspaces)
     process_start_dir = args.output / "process-start"
     process_start_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create suppression canaries
+    canary_dir = args.output / "canary-skills"
+    canary_dir.mkdir(parents=True, exist_ok=True)
+    canary_skills = create_canary_skills(canary_dir)
 
     # Get source status before staging
     source_status_before = get_source_status(args.source_repo)
@@ -1038,6 +1205,8 @@ def main() -> int:
         "baseline_workspace": str(baseline_workspace),
         "d7y_install": str(d7y_install),
         "process_start_dir": str(process_start_dir),
+        "canary_dir": str(canary_dir),
+        "d7y_object_ids": d7y_object_ids,
         "with_skill_objects": with_skill_objects,
         "baseline_objects": baseline_objects,
         "source_status_before": source_status_before,
@@ -1052,6 +1221,7 @@ def main() -> int:
         print(f"  Baseline workspace: {baseline_workspace}")
         print(f"  D7Y installation: {d7y_install}")
         print(f"  Process start directory: {process_start_dir}")
+        print(f"  Canary skills: {canary_dir}")
         print(f"  Selected objects: {len(with_skill_objects)}")
         print(f"  Prompt: {case.get('prompt', '')[:100]}...")
         print("Dry run complete: setup validated, no execution performed")
@@ -1064,11 +1234,11 @@ def main() -> int:
 
     # Run with-skill arm
     print(f"Running with-skill arm for {args.case}...")
-    with_skill_result = run_arm(config, with_skill_workspace, case.get("prompt", ""), True, d7y_install, process_start_dir)
+    with_skill_result = run_arm(config, with_skill_workspace, case.get("prompt", ""), True, d7y_install, process_start_dir, canary_dir)
 
     # Run baseline arm
     print(f"Running baseline arm for {args.case}...")
-    baseline_result = run_arm(config, baseline_workspace, case.get("prompt", ""), False, d7y_install, process_start_dir)
+    baseline_result = run_arm(config, baseline_workspace, case.get("prompt", ""), False, d7y_install, process_start_dir, canary_dir)
 
     # Run deterministic checks
     checks = run_deterministic_checks(case, with_skill_result, baseline_result, skill_name)
