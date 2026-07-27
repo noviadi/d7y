@@ -1,7 +1,7 @@
 ---
 title: Auditable Claude Code Delegation
 type: docs
-status: todo
+status: done
 createdAt: 2026-07-27
 updatedAt: 2026-07-27
 ---
@@ -170,3 +170,20 @@ scripts/delegate-claude.sh \
 ### Decisions returned
 
 No product-runtime or lifecycle decision was required. True OS/container isolation remains a separate design decision if untrusted implementation work is introduced.
+
+## Amp review and acceptance
+
+Amp reviewed the complete range `38b059d23e954d7af7d82151dc789bf4b0f030cb..800f533768b0cfac01730adc95008de7c02ff22f`. The first review rejected the initial implementation because Claude Code 2.1.218 requires `--verbose` with print-mode stream JSON, prompt bytes came from the mutable worktree, real-run evidence and postflight were incomplete, the template had contradictory commit authority, profile defaults were under-documented, and subdirectory invocation failed. Corrections in `51fe1c8` moved prompt input to the starting-HEAD Git blob, added the required flag and complete invocation report, made postflight preserve input and Claude statuses, aligned the template and profile contract, and normalized canonical launcher execution. A follow-up review found that Git inspection failures could still appear clean; `800f533` made cleanliness, changed-path, ancestry, and commit-count failures explicitly unresolved or partial without masking Claude's status.
+
+Final acceptance evidence:
+
+- `bash -n scripts/delegate-claude.sh` — passed.
+- `scripts/delegate-claude.sh --help` — passed.
+- Clean task-worktree dry runs from the repository root and `docs/` — passed; the final envelope reported prompt blob `c97b5ebeda91bb902daf6072f7f3a8a176ebc50f`, launcher/start tip `800f533768b0cfac01730adc95008de7c02ff22f`, exact branch/worktree, Claude Code 2.1.218, profile, strict-empty MCP, project-only settings, no persistence, and `--verbose --output-format stream-json` without invoking Claude.
+- Disposable fake-Claude live path — passed. It exercised the real non-dry-run pipeline, asserted required CLI arguments, proved the bytes between prompt boundaries equal the committed Git blob byte-for-byte, preserved zero input/Claude/launcher statuses, and reported current branch, clean worktree, and complete changed-path inspection.
+- Disposable invalid cases — template execution, untracked prompt with a committed matching plan, dirty prompt, invalid profile, and `main` execution each returned 1 with the intended rejection. Fixtures were removed.
+- `git diff --check 38b059d...800f533` — passed.
+- Final worktree — clean.
+- `main` remained at the planned base `38b059d`; no rebase was required.
+
+The accepted implementation retains all task commit boundaries. Residual risks remain as recorded above: no authenticated live Claude run succeeded in this OAuth environment, generic Bash is a trust grant rather than a sandbox, and future Claude CLI changes require renewed verification.
