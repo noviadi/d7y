@@ -49,6 +49,16 @@ When a handoff assigns a task worktree and branch, execute there rather than in 
 - Linked worktrees share Git metadata and external resources and do not isolate ports, caches, services, credentials, or other external resources, so avoid repository-global configuration or shared-resource changes outside scope and namespace external resources separately when the task requires it.
 - Follow the explicitly selected same-worktree path when Amp or the human chooses it; do not create an unsolicited worktree.
 
+## Delegation handoff
+
+When invoked through `scripts/delegate-claude.sh` (or an equivalent direct bootstrap invocation), treat the complete handoff as the launcher-resolved runtime envelope plus the committed concrete prompt plus the governing plan.
+
+- Treat the launcher-provided envelope, the committed prompt, and the governing plan as the handoff. The envelope carries the resolved repository root, prompt path and commit, launcher commit, task base/starting `HEAD`, branch, worktree, Claude Code version, profile, model/effort, allowed matchers, and the network/MCP/persistence/settings posture.
+- Report a mismatch rather than overriding resolved context. If the current checkout, branch, HEAD, plan, or task scope disagrees with the envelope, stop and surface the mismatch instead of inferring a default.
+- Do not modify the concrete prompt after execution begins. Implementation feedback is written into the governing plan, not back into the prompt. Concrete prompts under `docs/prompts/` are immutable handoff artifacts (see `docs/prompts/README.md`).
+- Never perform lifecycle actions during a normal implementation handoff: no rebase, merge, push, worktree removal, branch creation/rename/deletion, amendment of existing commits, or forced Git operations.
+- Treat the preserved prompt as evidence of reproducible inputs, not proof of deterministic output or sandboxing. A permission profile narrows the tool surface; it does not isolate filesystem paths or processes.
+
 ## Verification
 
 Scale verification to the change. At minimum:

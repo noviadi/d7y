@@ -23,9 +23,9 @@ Make isolated Git worktrees the executable default for non-trivial implementatio
 Amp owns the handoff lifecycle:
 
 1. Decide whether isolation is proportionate for the work.
-2. Commit the ready plan and every required task input to `main`.
+2. Commit the ready plan and every required task input to `main`, including the concrete delegation prompt under `docs/prompts/<plan-slug>.<execution-slug>.md` (see `docs/prompts/README.md`).
 3. Create, or direct creation of, `work/<slug>` and a sibling worktree at `../d7y-worktrees/<slug>` from the recorded base commit.
-4. Invoke Claude Code in the exact worktree and authorize commits only on that branch.
+4. Invoke Claude Code in the exact worktree through `scripts/delegate-claude.sh <prompt>` by default, and authorize commits only on that branch.
 5. Require a clean worktree (no uncommitted or untracked files) before review.
 6. Review branch commits, the complete `main...branch` diff, plan feedback, verification evidence, deviations, and residual risk.
 7. Keep corrections and review feedback on the task branch.
@@ -40,6 +40,16 @@ A worktree handoff must record its required payload: the base commit, the exact 
 Linked worktrees isolate working-tree files and indexes but still share Git objects, refs, repository configuration, hooks, remotes, and external resources. They do not isolate ports, caches, services, credentials, or other external resources; namespace those separately when the task requires it. Integrations into `main` are serialized.
 
 Same-worktree execution is acceptable when the work is trivial and reversible, intentionally depends on uncommitted state, directly corrects an uncommitted change, uses linked-worktree-incompatible tooling, requires a serialized live handoff edit, or the human chooses the lighter path. Same-worktree execution remains serialized and must account for untracked files.
+
+## Auditable Claude Code delegation
+
+Make Amp-to-Claude Code implementation delegation auditable and repeatable by preserving each concrete delegation prompt under `docs/prompts/` and invoking it through the deterministic launcher `scripts/delegate-claude.sh`. The contract and naming rules live in `docs/prompts/README.md`.
+
+- Preserve and commit the concrete prompt **before** creating the task worktree. The launcher rejects an untracked, uncommitted, or dirty prompt.
+- Use the launcher by default for isolated Claude Code handoffs. The first bootstrap of this system may invoke Claude Code directly because the launcher did not yet exist; constrain that direct invocation equivalently and record its exact posture in review.
+- During review, record the prompt path, prompt commit, launcher commit, resolved base/starting `HEAD`, current branch and worktree, Claude Code version, model/effort, permission profile, extra grants, and the resulting tip. The launcher reports these in a dry run (`--dry-run`) and in its non-destructive postflight.
+- Treat prompt preservation as evidence of reproducible inputs, not proof of deterministic model output or sandboxing. A profile and prompt narrow the tool surface; they do not isolate filesystem paths or processes.
+- Retain lifecycle authority: normal Claude implementation handoffs never delegate rebase, merge, push, worktree removal, or branch deletion. The launcher detects and reports preconditions and postconditions but never mutates Git state.
 
 ## Operating mode: build D7Y, do not perform discovery
 
