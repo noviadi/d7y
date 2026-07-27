@@ -113,3 +113,60 @@ Append implementation feedback to this plan with:
 - Treating `--allowedTools`, the committed prompt, or a linked worktree as an OS security sandbox.
 - Storing secrets, credentials, or raw sensitive traces in prompts or plans.
 - A templating engine in this increment; the template is copied and completed by Amp.
+
+## Implementation feedback
+
+### Result
+
+Implemented the preserved-prompt contract and template, the executable launcher at `scripts/delegate-claude.sh`, and the Amp/Claude handoff bindings in `AGENTS.md` and `CLAUDE.md`.
+
+The launcher validates a committed unchanged prompt, clean assigned `work/<slug>` checkout, and supported profile; resolves the execution envelope; streams the committed prompt bytes to Claude without evaluating Markdown; applies explicit tools, `dontAsk`, strict-empty MCP, project-only settings, and no persistence; then reports exit status, branch movement, commits, changed paths, and cleanliness without repairing state.
+
+### Files changed
+
+- `AGENTS.md`
+- `CLAUDE.md`
+- `docs/prompts/README.md`
+- `docs/prompts/delegate-implementation.template.md`
+- `scripts/delegate-claude.sh`
+- this plan (feedback only)
+
+The executed concrete prompt `docs/prompts/auditable-claude-delegation.initial.md` remained unchanged.
+
+### Bootstrap execution evidence and deviations
+
+The launcher did not exist at delegation time, so Amp used the plan's direct-bootstrap exception. Claude Code 2.1.218 was invoked on `work/auditable-claude-delegation` from base `38b059d23e954d7af7d82151dc789bf4b0f030cb`, with Sonnet, explicit `Read,Edit,Write,Bash`, `dontAsk`, no network tools, strict-empty MCP, no session persistence, and no lifecycle authority.
+
+Project-only settings could not refresh the environment's OAuth credentials, while normal and safe-mode probes succeeded. Bootstrap therefore used `--safe-mode` and explicitly required Claude to read `CLAUDE.md`; this is a deviation from the launcher's intended `--setting-sources project` posture. One Opus/high run and two Sonnet retries stalled for prolonged reasoning without completing. The final low-effort retry produced the scoped files but was terminated before validation, feedback, or commit. Amp reviewed and retained those changes, corrected the strict-empty MCP JSON, preserved the prompt bytes through stdin, improved postflight changed-path reporting, ran verification, and committed the result. No permissions or lifecycle authority were widened after the handoff.
+
+### Checks and results
+
+- `bash -n scripts/delegate-claude.sh` — passed.
+- `scripts/delegate-claude.sh --help` — passed.
+- `git diff --check` — passed before the implementation commit.
+- Focused terminology search across the changed constitutions, prompt artifacts, launcher, and plan — no contradictory script-location, lifecycle, prompt-immutability, deterministic-output, or sandbox claim found.
+- `shellcheck scripts/delegate-claude.sh` — not run; `shellcheck` is unavailable in this environment.
+- Clean-worktree dry run with `--profile implementation-commit --model sonnet --effort low` — passed without invoking Claude. It resolved prompt `docs/prompts/auditable-claude-delegation.initial.md` at `38b059d23e954d7af7d82151dc789bf4b0f030cb`, branch `work/auditable-claude-delegation`, the exact sibling worktree, starting HEAD, Claude Code 2.1.218, broad implementation profile, strict-empty MCP, project-only settings, and disabled persistence.
+- Disposable-repository cases — valid dry run returned 0; untracked prompt, dirty prompt, invalid profile, and `main` execution each returned 1 with the intended reason. The fixture was removed afterward.
+
+Representative dry-run command:
+
+```sh
+scripts/delegate-claude.sh \
+  --dry-run \
+  --profile implementation-commit \
+  --model sonnet \
+  --effort low \
+  docs/prompts/auditable-claude-delegation.initial.md
+```
+
+### Residual risks
+
+- `implementation-commit` deliberately grants generic Bash. It is suitable only for trusted scoped work in an isolated worktree and is not path, process, credential, or network isolation.
+- Claude Code's project-only settings posture could not be exercised in a live delegated run with this OAuth environment. A future live launcher use must verify authentication succeeds without weakening settings isolation; failure should remain visible.
+- Prompt and launcher preservation make inputs reconstructable, not model behavior reproducible.
+- Claude Code may change flag behavior in later versions; the resolved version and dry-run posture remain review inputs.
+
+### Decisions returned
+
+No product-runtime or lifecycle decision was required. True OS/container isolation remains a separate design decision if untrusted implementation work is introduced.

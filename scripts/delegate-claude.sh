@@ -381,6 +381,6 @@ if [[ -n "$changed_paths" ]]; then
     printf '    - %s\n' "$line" >&2
   done <<< "$changed_paths"
   printf '  (review the main...%s diff before integrating)\n' "$branch" >&2
-  fi
+fi
 
 exit "$rc"
