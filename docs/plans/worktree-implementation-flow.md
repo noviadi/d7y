@@ -1,7 +1,7 @@
 ---
 title: Worktree-Isolated Implementation Flow
 type: docs
-status: todo
+status: done
 createdAt: 2026-07-27
 updatedAt: 2026-07-27
 ---
@@ -85,3 +85,37 @@ Add execution rules that require Claude Code to:
 - Squash merges or incidental merge commits.
 - A requirement to use a worktree for every typo or tiny correction.
 - Treating linked worktrees as process, Git-metadata, network, port, cache, or external-service isolation.
+
+## Implementation feedback
+
+Implemented by Claude Code on `work/constitution-worktree-flow` from base `944ae7310c991da3f4a4023421bf34c8bff7125f`. Documentation-only change; no scripts, hooks, aliases, templates, schemas, or `.gitignore` entries added.
+
+### Files changed
+
+- `AGENTS.md`: added a `## Worktree-isolated implementation handoffs` section after Amp's repository role. It states the default, enumerates Amp's ten-step lifecycle, records the `--ff-only` no-squash integration rule and the rebase-instead-of-incidental-merge rule, states that linked worktrees share Git objects/refs/config/hooks/remotes/external resources and that `main` integrations are serialized, and lists the same-worktree exceptions (serialized, accounts for untracked files).
+- `CLAUDE.md`: added a `## Worktree-isolated execution` section after `## How Claude Code executes`. It requires using the assigned worktree and branch, pre-edit verification, branch-only commits on explicit authorization, staging explicit paths / cohesive commits / preserved attribution / no squash, feedback committed with the implementation, a clean worktree on return, prohibition of rebase/merge-to-main/worktree-removal/branch-deletion/force/push unless explicitly assigned, awareness of shared Git metadata and external resources, and following the same-worktree path when chosen.
+- `docs/plans/worktree-implementation-flow.md`: set `status: done` and added this feedback section.
+
+### Checks run
+
+- `git diff --check` — passes (no whitespace/conflict errors, no output).
+- Agreement check (path, branch, commit, review, rebase, fast-forward, no-squash, cleanup semantics): the AGENTS.md lifecycle and CLAUDE.md execution rules were written to match the accepted decisions verbatim in semantics; both reference `work/<slug>`, `../d7y-worktrees/<slug>`, `--ff-only` integration without squash, rebase-then-rerun, clean-worktree-before-review, and separate deliberate cleanup.
+- `grep` for instructions authorizing Claude to commit directly to `main`: none found.
+- `grep` for review text implying branch review includes uncommitted/untracked files: none found; CLAUDE.md requires a clean worktree and AGENTS.md step 5 requires a clean worktree before review.
+
+### Verification classification
+
+Static documentation validation only. No deterministic tests, isolated agent runs, comparative evals, or human acceptance performed (none applicable to this constitutional documentation change). No new evals, scripts, or skills touched.
+
+### Deviations
+
+None. Scope was held to `AGENTS.md`, `CLAUDE.md`, and this plan's feedback as the handoff instructed.
+
+### Residual risk / uncertainty
+
+- These are unenforced workflow rules by design (anti-goal: automation). Conformance depends on Amp and Claude Code following them; nothing in-tree verifies a handoff used a worktree.
+- The plan's status field is Amp-owned metadata; set to `done` here to reflect a complete implementation pending Amp review. Amp may reset or supersede it during reconciliation.
+
+### Decisions returned
+
+None requiring Amp/human reconciliation. No consequential ambiguity encountered; no stop condition triggered (base commit present, plan committed at base, assigned branch/worktree used, clean start).

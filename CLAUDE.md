@@ -34,6 +34,20 @@ Read the relevant canonical document before changing its domain. Treat contradic
 - **Write implementation feedback** into the governing plan before completing the handoff: files changed, checks run and their results, deviations and why, residual risk or uncertainty, and decisions returned.
 - **Report exact verification.** Distinguish static validation, deterministic tests, isolated agent runs, comparative evals, and human acceptance. Never promote provisional evidence into a stronger claim, and never equate a valid eval definition with a completed eval run.
 
+## Worktree-isolated execution
+
+When a handoff assigns a task worktree and branch, execute there rather than in the main checkout:
+
+- Use the exact assigned worktree and `work/<slug>` branch rather than the main checkout.
+- Verify current path, branch, HEAD and base commit, governing plan, and task scope before editing.
+- Commit only when the handoff explicitly authorizes it, and only on the assigned task branch.
+- Stage explicit intended paths, make cohesive commits, preserve attribution, and never squash merely to simplify review.
+- Write implementation feedback into the governing plan and commit it with the implementation.
+- Return with a clean worktree: no uncommitted or untracked files.
+- Do not rebase, merge into `main`, remove the worktree, delete branches, force operations, or push unless the handoff explicitly assigns that action.
+- Linked worktrees share Git metadata and external resources, so avoid repository-global configuration or shared-resource changes outside scope.
+- Follow the explicitly selected same-worktree path when Amp or the human chooses it; do not create an unsolicited worktree.
+
 ## Verification
 
 Scale verification to the change. At minimum:

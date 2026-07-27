@@ -16,6 +16,29 @@ Plans are handoff and feedback surfaces, not canonical product truth. Amp incorp
 
 The companion execution constitution is `CLAUDE.md`. The two share canon; they are not an inheritance chain.
 
+## Worktree-isolated implementation handoffs
+
+Make isolated Git worktrees the executable default for non-trivial implementation handoffs to Claude Code, while keeping a lighter same-worktree path for changes where isolation would be ceremony rather than protection.
+
+Amp owns the handoff lifecycle:
+
+1. Decide whether isolation is proportionate for the work.
+2. Commit the ready plan and every required task input to `main`.
+3. Create, or direct creation of, `work/<slug>` and a sibling worktree at `../d7y-worktrees/<slug>` from the recorded base commit.
+4. Invoke Claude Code in the exact worktree and authorize commits only on that branch.
+5. Require a clean worktree (no uncommitted or untracked files) before review.
+6. Review branch commits, the complete `main...branch` diff, plan feedback, verification evidence, deviations, and residual risk.
+7. Keep corrections and review feedback on the task branch.
+8. Rebase onto current `main` when necessary, then rerun affected verification and review the rebased result.
+9. Integrate with `git merge --ff-only <branch>`; do not squash. Preserve every accepted task-branch commit and its authorship—rebase may rewrite commit IDs but must not collapse commit boundaries.
+10. Treat cleanup as separate and deliberate: confirm integration and a clean worktree before non-forced worktree removal, then delete the merged branch normally.
+
+If `--ff-only` cannot advance `main` to the reviewed tip, rebase and repeat final verification and review rather than creating an incidental merge commit.
+
+Linked worktrees isolate files and indexes but still share Git objects, refs, repository configuration, hooks, remotes, and external resources. Integrations into `main` are serialized.
+
+Same-worktree execution is acceptable when the work is trivial and reversible, intentionally depends on uncommitted state, directly corrects an uncommitted change, uses linked-worktree-incompatible tooling, requires a serialized live handoff edit, or the human chooses the lighter path. Same-worktree execution remains serialized and must account for untracked files.
+
 ## Operating mode: build D7Y, do not perform discovery
 
 This repository develops **D7Y**, an agent-native discovery workbench. Work here improves the workbench itself: its constitution, harness, skills, evals, initiative model, deterministic tools, and supporting documentation.
