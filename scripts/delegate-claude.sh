@@ -86,9 +86,9 @@ require_git_clean() {
   # $1 = optional path filter
   local out
   if [[ $# -eq 1 ]]; then
-    out="$(git status --porcelain -- "$1")"
+    out="$(git status --porcelain -- "$1")" || return 2
   else
-    out="$(git status --porcelain)"
+    out="$(git status --porcelain)" || return 2
   fi
   [[ -z "$out" ]]
 }
@@ -236,7 +236,7 @@ git cat-file -e "$task_head:$plan_rel" 2>/dev/null \
 git ls-files --error-unmatch -- "$rel" >/dev/null 2>&1 \
   || die "prompt is not tracked by git: $rel (commit it before delegating)"
 require_git_clean "$rel" \
-  || die "prompt has uncommitted changes: $rel (commit it before delegating)"
+  || die "prompt has uncommitted changes or status could not be inspected: $rel"
 prompt_commit="$(git log -1 --format=%H -- "$rel" 2>/dev/null)" \
   || die "could not resolve the commit that introduced the prompt"
 [[ -n "$prompt_commit" ]] \
@@ -254,7 +254,7 @@ branch="$(git rev-parse --abbrev-ref HEAD)"
   || die "branch '$branch' is not a work/<slug> branch"
 
 require_git_clean \
-  || die "worktree is not clean; commit or discard changes before delegating"
+  || die "worktree is not clean or status could not be inspected"
 
 worktree_path="$(git rev-parse --show-toplevel)"
 claude_version="$(claude --version 2>/dev/null | head -n1 || echo "unknown")"
@@ -263,7 +263,7 @@ launcher_rel="scripts/delegate-claude.sh"
 git ls-files --error-unmatch -- "$launcher_rel" >/dev/null 2>&1 \
   || die "canonical launcher is not tracked: $launcher_rel"
 require_git_clean "$launcher_rel" \
-  || die "canonical launcher has uncommitted changes: $launcher_rel"
+  || die "canonical launcher has uncommitted changes or status could not be inspected: $launcher_rel"
 launcher_commit="$(git log -1 --format=%H -- "$launcher_rel")"
 launcher_id="committed $launcher_commit"
 
@@ -392,16 +392,38 @@ new_head="$(git rev-parse HEAD 2>/dev/null || printf 'unresolved')"
 current_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || printf 'unresolved')"
 commits_created=0
 if [[ "$new_head" != "unresolved" && "$new_head" != "$task_head" ]]; then
-  if git merge-base --is-ancestor "$task_head" "$new_head"; then
-    commits_created="$(git rev-list --count "${task_head}..${new_head}")"
-  else
+  git merge-base --is-ancestor "$task_head" "$new_head" 2>/dev/null
+  ancestor_rc=$?
+  if [[ "$ancestor_rc" -eq 0 ]]; then
+    commits_created="$(git rev-list --count "${task_head}..${new_head}" 2>/dev/null)"
+    [[ $? -eq 0 ]] || commits_created="unresolved"
+  elif [[ "$ancestor_rc" -eq 1 ]]; then
     commits_created="unknown (current HEAD is not a descendant of starting HEAD)"
+  else
+    commits_created="unresolved"
   fi
 fi
-changed_paths="$({ git diff --name-only "$task_head" 2>/dev/null || true; git ls-files --others --exclude-standard 2>/dev/null || true; } | awk 'NF' | sort -u)"
-worktree_clean="no"
-if require_git_clean; then
+diff_paths="$(git diff --name-only "$task_head" 2>/dev/null)"
+diff_rc=$?
+untracked_paths="$(git ls-files --others --exclude-standard 2>/dev/null)"
+untracked_rc=$?
+if [[ "$diff_rc" -eq 0 && "$untracked_rc" -eq 0 ]]; then
+  changed_paths_state="complete"
+elif [[ "$diff_rc" -eq 0 || "$untracked_rc" -eq 0 ]]; then
+  changed_paths_state="partial"
+else
+  changed_paths_state="unresolved"
+fi
+changed_paths="$(printf '%s\n%s\n' "$diff_paths" "$untracked_paths" | awk 'NF' | sort -u)"
+
+status_output="$(git status --porcelain 2>/dev/null)"
+status_rc=$?
+if [[ "$status_rc" -ne 0 ]]; then
+  worktree_clean="unresolved"
+elif [[ -z "$status_output" ]]; then
   worktree_clean="yes"
+else
+  worktree_clean="no"
 fi
 
 printf '\n' >&2
@@ -415,6 +437,7 @@ printf '  starting branch    : %s\n' "$branch" >&2
 printf '  current branch     : %s\n' "$current_branch" >&2
 printf '  commits created    : %s\n' "$commits_created" >&2
 printf '  worktree clean     : %s\n' "$worktree_clean" >&2
+printf '  changed-path scan  : %s\n' "$changed_paths_state" >&2
 if [[ -n "$changed_paths" ]]; then
   printf '  changed paths      :\n' >&2
   while IFS= read -r line; do
