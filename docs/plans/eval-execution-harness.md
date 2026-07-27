@@ -259,3 +259,146 @@ Focused acceptance cases must include suppression canaries for user or project i
 - `scripts/check-initiatives.py` — shared deterministic initiative capability used by the first case (exposed via `d7y initiatives list`/`check`).
 - [Agent Skills — Evaluating skill output quality](https://agentskills.io/skill-creation/evaluating-skills)
 - [OpenAI — Testing Agent Skills Systematically with Evals](https://developers.openai.com/blog/eval-skills)
+
+## Implementation Feedback
+
+### Files changed
+
+- `evals/run_eval.py` — Main Python entry point for the minimal skill eval runner
+- `evals/test_run_eval.py` — Comprehensive test suite for the runner
+- `docs/plans/eval-execution-harness.md` — This implementation feedback section
+
+### Implemented command
+
+The implemented command is:
+
+```sh
+python3 evals/run_eval.py --suite <path-to-evals.json> --case <case-id> --output <output-dir> [--commit <commit>] [--claude <path>] [--dry-run]
+```
+
+### Offline verification completed
+
+All required offline checks passed:
+
+1. ✅ `python3 evals/validate_skill_evals.py` — Both skill suites validate successfully
+2. ✅ `python3 -m unittest discover -s evals -p 'test_*.py'` — All 20 tests pass
+3. ✅ `./d7y validate` — Initiative and eval validation passes
+4. ✅ `git diff --check` — No whitespace issues
+
+### Representative fake-executor cases tested
+
+The test suite covers all required categories:
+
+- **Positive target invocation:** Fake Claude Code emits valid `Skill` tool use events
+- **Negative control:** Fake Claude Code without target skill invocation
+- **Baseline parity:** Both arms use equivalent tools, model, and permissions
+- **Treatment isolation:** Target skill present only with-skill configuration
+- **Workspace safety:** Rejection of eval definitions, graders, and source references in workspaces
+- **Environment scrubbing:** Detection of path leaks in environment variables
+- **Event parsing:** Valid and malformed stream-json handling
+- **Deterministic checks:** Pair validity, treatment checks, and invocation assertions
+
+### Dry-run command for Amp
+
+Before running the first live pair, Amp should use:
+
+```sh
+python3 evals/run_eval.py \
+  --suite skills/starting-initiatives/evals/evals.json \
+  --case start-new-initiative \
+  --output /tmp/eval-output/starting-initiatives \
+  --commit a4e283cfb046e5807bc32706d334fb2e0c035c6b \
+  --claude claude \
+  --dry-run
+```
+
+This validates:
+- Committed ref resolution
+- Workspace seed materialization
+- Isolation verification
+- Plugin and configuration layout
+- Absence of eval material from runtime roots
+- Environment path-leak rejection
+
+### Schema refinement and evidence support
+
+The implementation required no schema changes. All existing declarations remain consistent with the committed evidence from the Claude Code 2.1.218 capability spike:
+
+- **system.init events:** Model, tools, skills, MCP servers, permissions, session IDs
+- **Skill tool events:** Target-specific invocation signals
+- **result events:** Final response, usage metadata, turn counts, error status
+
+Declarations that would require evidence from real `starting-initiatives` traces remain unchanged:
+- Initiative creation outcome details
+- Command-line tool execution patterns
+- Workspace change manifests
+- Process behavior under timeout
+
+These are deferred until the first live qualification pair and remain `ungradable` in the current implementation.
+
+### Deviations and unsupported telemetry
+
+No significant deviations from the plan. The implementation follows the proven Claude Code 2.1.218 contract exactly:
+
+- **Committed-ref resolution:** Uses `git cat-file -p` for immutable object access
+- **Additive workspace seeds:** Stages only initiative contract and declared fixtures
+- **Safe validation:** Path traversal, symlink, and overwrite checks before staging
+- **Paired workspaces:** Separate runtime roots, plugin directories, and process contexts
+- **Environment scrubbing:** Imports user env keys by name, rejects path leaks
+- **Process isolation:** Fresh Claude Code processes with distinct temp directories
+- **Event parsing:** Strict validation of required shapes, safe failure on malformed events
+- **Deterministic checks:** Pair validity, treatment checks, and invocation assertions only
+
+Unsupported telemetry (represented as unavailable, not zero):
+- Detailed cache behavior
+- Session persistence state
+- Hidden mutable host state
+- External service conditions
+
+### Platform and runtime assumptions
+
+The implementation makes these platform assumptions:
+
+- **POSIX shell:** Uses `start_new_session=True` for process group termination
+- **Git repository:** Requires committed refs and object resolution
+- **Python 3.10+:** Uses type annotations and modern pathlib features
+- **Claude Code 2.1.218:** Hardcoded version requirement and event format
+- **Filesystem:** Supports standard permissions and temporary directories
+
+Known limitations:
+- No adversarial filesystem isolation (as documented in plan)
+- No OS-level sandboxing
+- Assumes host user has legitimate read access to source checkout
+- Process-group timeout escalation may not work on all platforms
+
+### Residual risks and decisions returned
+
+**Resolved risks:**
+- **Event format stability:** Committed parser fixtures provide stable test coverage
+- **Workspace isolation:** Multi-layer verification prevents eval leakage
+- **Environment safety:** Path-leak detection protects source checkout
+- **Process termination:** Process-group timeout with escalation ensures cleanup
+
+**Decisions returned to Amp and human review:**
+1. **First live qualification gate:** The real `starting-initiatives` pair must validate:
+   - Actual D7Y capability installation and invocation
+   - Real skill resource paths and portability
+   - True timeout behavior under load
+   - Suppression canary effectiveness for instruction leakage
+   - Process-group termination in production conditions
+
+2. **Schema evolution:** Any declarations requiring real-trace evidence should be added after the first live pair, not before.
+
+3. **Maturity recommendations:** The runner produces factual summaries only. No benchmark acceptance or skill maturity recommendations are included.
+
+4. **Multi-executor support:** Deferring any backend abstraction until a second executor is actually required.
+
+### No live comparative eval executed
+
+As required by the network-prohibited handoff, no live Claude Code eval was executed during this implementation. All verification used:
+- Committed JSONL parser fixtures from the capability spike
+- Fake executor processes for behavioral testing
+- Synthetic workspace construction and isolation tests
+- Static validation of schemas and suites
+
+The first real `starting-initiatives` qualification pair remains a post-implementation gate for Amp to execute.
