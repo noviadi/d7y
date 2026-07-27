@@ -142,3 +142,58 @@ If `shellcheck` is installed, run it against `d7y`; otherwise record that it was
 - Stop if an accepted command cannot preserve the owning script's arguments or exit status without inventing a new public option model.
 - Stop and return any request to add workflow judgment, persistent state, automatic lifecycle actions, package infrastructure, or product-runtime support; those are separate architecture decisions.
 - Preserve unrelated worktree changes and report any verification blocked by the environment.
+
+## Implementation Feedback
+
+Executor: Claude Code. Branch: `work/root-cli`. Executed from the assigned worktree at `/home/noviadi/Developments/discovery/d7y-worktrees/root-cli`.
+
+### Files changed
+
+- `d7y` (new executable, mode `0755`): dependency-free Bash dispatcher. Resolves the repository root from its own location via `readlink -f`, `cd`s there, and dispatches a small explicit `case` tree. Leaf commands (`validate evals`, `validate initiatives`, `dev delegate`) `exec` the underlying script; aggregate `validate` runs evals then initiatives under `set -e`. No `eval`, no temp/persistent state, no helper library.
+- `README.md`: added a short "Repository CLI" section after the Repository section. Characterizes `./d7y` as repository tooling, shows aggregate validation and delegation examples, and states the underlying scripts remain directly executable. Does not duplicate leaf documentation.
+- `docs/plans/root-cli.md`: this feedback section only.
+
+No validator, launcher, prompt, or canonical document was modified.
+
+### Exact checks and results
+
+Required plan verification (run from the worktree root):
+
+- `bash -n d7y` → rc `0`.
+- `./d7y --help` → usage on stdout, exit `0`.
+- `./d7y validate` → both validators pass, exit `0` (evals: 2 suites valid; initiatives: valid, 0 found).
+- `./d7y validate evals` → 2 suites valid, exit `0`.
+- `./d7y validate initiatives --json` → valid JSON, exit `0`.
+- `./d7y dev delegate --help` → forwards to the launcher's usage, exit `0` (no live Claude run).
+- `(cd docs && ../d7y validate evals)` → 2 suites valid, exit `0` (root resolution works from another current directory).
+
+Invalid dispatch (each captured with stdout/stderr separated):
+
+- `./d7y unknown` → exit `2`, empty stdout, diagnostic `d7y: unknown command: unknown` plus usage on stderr.
+- `./d7y validate unknown` → exit `2`, empty stdout, diagnostic `d7y: unknown validate subcommand: unknown` plus usage on stderr.
+- `./d7y dev unknown` → exit `2`, empty stdout, diagnostic `d7y: unknown dev subcommand: unknown` plus usage on stderr.
+
+Empty stdout in all three confirms no underlying validator or launcher was invoked.
+
+Additional contract checks:
+
+- `./d7y`, `./d7y help`, `./d7y -h` → usage on stdout, exit `0`.
+- `./d7y validate initiatives --help` → checker's argparse help forwarded, exit `0`.
+- `./d7y validate evals /tmp/does-not-exist.json` → validator's own `INVALID:` output and exit `1` preserved through `exec` (leaf exit-status/output preservation without mutating repository state).
+- `git diff --check` → clean, rc `0`.
+- `shellcheck d7y` → not run; `shellcheck` is not installed in this environment.
+
+### Deviations from the command contract
+
+None. All six commands and the failure contract behave as specified.
+
+### Residual risks and unsupported environments
+
+- Root resolution uses `readlink -f`, already a repository dependency (`scripts/delegate-claude.sh` uses the same). Environments without GNU `readlink -f` are unsupported, consistent with the existing launcher.
+- Aggregate `validate` stop-at-first-failure relies on `set -e`: the second validator's status is observable only when the first passes. Not exercised with a forced first-validator failure to avoid mutating repository state; the behavior is structural.
+- `validate evals [paths...]` interprets relative path arguments against the repository root (the dispatcher `cd`s there before forwarding), matching the plan's "runs ... from the repository root" wording; callers should pass repo-relative paths.
+- `shellcheck` static linting was unavailable; `bash -n` syntax validation was run instead.
+
+### Decisions returned to Amp or the human
+
+None. No scope expansion, workflow judgment, persistent state, package infrastructure, product-runtime support, or permission expansion was needed or requested.

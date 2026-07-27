@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# d7y — thin repository command façade for D7Y development.
+#
+# Discovers and dispatches to the existing deterministic validators and the
+# Claude Code delegation launcher. It owns command discovery and dispatch only;
+# it contains no domain logic, no persistent state, and no second implementation
+# of any validator or launcher precondition. See docs/plans/root-cli.md.
+#
+# This is repository tooling, not a workflow engine, durable control plane, or
+# first-class D7Y product-runtime binding.
+
+set -euo pipefail
+
+# Resolve the repository root from this script's own location so the command
+# works regardless of the caller's current directory, including paths with
+# spaces.
+readonly SELF_PATH="$(readlink -f -- "${BASH_SOURCE[0]:-$0}")"
+readonly ROOT="$(dirname -- "$SELF_PATH")"
+
+usage() {
+  cat <<'EOF'
+Usage: d7y <command> [args...]
+
+Thin repository command façade for D7Y development. It discovers and dispatches
+to the existing deterministic validators and the Claude Code delegation launcher
+without duplicating their behavior.
+
+Command groups:
+  validate                     Validate skill evals, then initiatives.
+  validate evals [paths...]    Validate skill eval definitions (forwards args).
+  validate initiatives [opts]  Validate initiatives (forwards --root, --json).
+  dev delegate [opts] <prompt> Delegate a Claude Code implementation handoff.
+
+The underlying scripts remain directly executable. Leaf options are not
+duplicated here; run "./d7y dev delegate --help" or
+"./d7y validate initiatives --help", or invoke the underlying script directly,
+for detail.
+
+d7y is repository tooling, not a workflow engine, durable control plane, or
+first-class D7Y product-runtime binding.
+EOF
+}
+
+die_usage() {
+  printf 'd7y: %s\n\n' "$*" >&2
+  usage >&2
+  exit 2
+}
+
+# Every underlying script is invoked from the repository root.
+cd -- "$ROOT"
+
+case "${1:-}" in
+  ""|help|-h|--help)
+    usage
+    exit 0
+    ;;
+  validate)
+    shift
+    case "${1:-}" in
+      "")
+        # Aggregate: evals then initiatives, stopping at the first failure.
+        # With set -e a failing validator terminates d7y with that exit status.
+        python3 evals/validate_skill_evals.py
+        python3 skills/starting-initiatives/scripts/check_initiatives.py --root .
+        ;;
+      evals)
+        shift
+        exec python3 evals/validate_skill_evals.py "$@"
+        ;;
+      initiatives)
+        shift
+        exec python3 skills/starting-initiatives/scripts/check_initiatives.py "$@"
+        ;;
+      *)
+        die_usage "unknown validate subcommand: ${1:-}"
+        ;;
+    esac
+    ;;
+  dev)
+    shift
+    case "${1:-}" in
+      delegate)
+        shift
+        exec scripts/delegate-claude.sh "$@"
+        ;;
+      *)
+        die_usage "unknown dev subcommand: ${1:-}"
+        ;;
+    esac
+    ;;
+  *)
+    die_usage "unknown command: ${1:-}"
+    ;;
+esac

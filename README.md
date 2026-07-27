@@ -19,6 +19,17 @@ D7Y is designed around a thin harness, substantial Markdown skills, and determin
 
 Start with the [workbench charter](./docs/discovery-workbench.md) and [agent-native principles](./docs/discovery-workbench-principles.md).
 
+## Repository CLI
+
+`./d7y` is the canonical local command façade for repository development: a thin, dependency-free Bash dispatcher over the existing validators and the Claude delegation launcher. It owns command discovery and deterministic dispatch only.
+
+```sh
+./d7y validate                    # validate skill evals, then initiatives
+./d7y dev delegate <prompt-path>  # delegate a Claude Code implementation handoff
+```
+
+The underlying scripts (`evals/validate_skill_evals.py`, `skills/starting-initiatives/scripts/check_initiatives.py`, and `scripts/delegate-claude.sh`) remain directly executable; `./d7y --help` lists the supported command groups. This is repository tooling, not a workflow engine, durable control plane, or first-class D7Y product-runtime binding.
+
 ## Runtime direction
 
 D7Y's required behavior is **host-neutral**: skill behavior, initiative and artifact semantics, evidence standards, checkpoints, and deterministic capability contracts are owned by canon, independent of the agent host that runs them. A host **binding** provides the concrete realization—skill loading, instruction discovery, invocation routing, model/tool/permission mapping, command access, and trace capture.
