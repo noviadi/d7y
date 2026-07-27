@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Comprehensive end-to-end tests for the minimal D7Y eval runner.
+"""End-to-end tests for the minimal D7Y skill eval runner.
 
-These tests verify safe workspace handling, runtime-state separation,
-target-skill treatment isolation, and safe failure on malformed executor output.
+Most tests drive the public CLI (``evals/run_eval.py``) through ``subprocess``
+against disposable committed Git repositories, so they exercise the real
+ownership boundary. A small number of narrow unit tests cover parser and path
+primitives directly. Fake Claude executables and a synthetic user settings file
+stand in for the live runtime; no live Claude is ever invoked.
 """
 
 from __future__ import annotations
@@ -10,1031 +13,787 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import textwrap
 import time
 import unittest
 from pathlib import Path
 
-# Import the runner module
-sys.path.insert(0, str(Path(__file__).parent))
-from run_eval import (
-    EvalConfig,
-    RunResult,
-    load_suite,
-    find_case,
-    resolve_commit,
-    verify_commit_exists,
-    get_source_status,
-    resolve_git_object,
-    check_git_tree_mode,
-    validate_path_for_source,
-    validate_path_for_destination,
-    prevalidate_staging_map,
-    create_isolated_workspace,
-    create_authentic_session_plugin,
-    create_control_plugin,
-    create_canary_skills,
-    create_settings_file_with_canaries,
-    build_scrubbed_env,
-    create_d7y_capability_installation,
-    stage_workspace_seed,
-    verify_isolation,
-    verify_no_control_collisions,
-    verify_output_root,
-    verify_executable,
-    build_claude_command,
-    parse_stream_json,
-    validate_required_events,
-    check_skill_invocation,
-    check_canary_leakage,
-    run_deterministic_checks,
-    EXPECTED_MODEL,
-    EXPECTED_PERMISSION_MODE,
-    EXPECTED_MCP_SERVERS,
-    EXPECTED_TOOLS_ARG,
-    SESSION_PLUGIN_NAME,
-    FAKE_GLOBAL_SKILL_NAME,
-    PROJECT_INSTRUCTION_CANARY,
+REPO_ROOT = Path(__file__).resolve().parent.parent
+EVALS_DIR = REPO_ROOT / "evals"
+RUNNER = EVALS_DIR / "run_eval.py"
+
+sys.path.insert(0, str(EVALS_DIR))
+import run_eval  # noqa: E402  (narrow unit tests only)
+
+
+# ---------------------------------------------------------------------------
+# Canonical file content for disposable committed repositories.
+# ---------------------------------------------------------------------------
+
+VALID_INITIATIVE_MD = textwrap.dedent(
+    """\
+    ---
+    title: Consultant call-to-proposal discovery
+    status: active
+    created: 2026-07-27
+    updated: 2026-07-27
+    aliases: []
+    related: []
+    ---
+
+    # Consultant call-to-proposal discovery
+
+    ## Provisional intent
+
+    ### Outcome
+
+    Investigate whether independent consultants need an agent-assisted way to turn
+    client calls into scoped proposals.
+
+    ### Subject
+
+    Independent consultants who sell scoped work.
+
+    ### Constraints and anti-goals
+
+    Unknown.
+
+    ## Primary uncertainty
+
+    Whether the bottleneck is capturing call content or scoping it into a proposal.
+
+    ## Current understanding
+
+    ### Evidence
+
+    None yet.
+
+    ### Assumptions
+
+    Consultants lose dealable context between call and proposal.
+
+    ## Current state
+
+    Next move: interview three consultants about their call-to-proposal handoff.
+    """
 )
 
 
-class FakeClaudeCode:
-    """A fake Claude Code executable for comprehensive testing."""
-
-    def __init__(self, temp_dir: Path):
-        self.temp_dir = temp_dir
-        self.executable_path = temp_dir / "fake-claude"
-        self.invocation_log = temp_dir / "invocations.jsonl"
-        self._create_fake_executable()
-
-    def _create_fake_executable(self):
-        """Create a fake Claude Code executable that logs invocations."""
-        script = f"""#!/usr/bin/env python3
-import json
-import sys
-import os
-from pathlib import Path
-
-invocation_log = Path("{self.invocation_log}")
-invocation_count = 0
-
-if invocation_log.exists():
-    for line in invocation_log.read_text().splitlines():
-        if line.strip():
-            try:
-                invocation_count += 1
-            except:
-                pass
-
-# Log invocation
-invocation_data = {{
-    "invocation": invocation_count + 1,
-    "args": sys.argv[1:],
-    "env": {{k: v for k, v in os.environ.items() if not k.startswith("TEST_") and k not in ["PATH", "HOME", "USER", "LANG"]}},
-}}
-
-with open(invocation_log, "a") as f:
-    f.write(json.dumps(invocation_data) + "\\n")
-
-# Emit minimal valid stream-json output
-events = [
-    {{"type": "system", "subtype": "init", "session_id": f"fixture-session-{{invocation_count}}", "tools": ["Skill", "Read", "Write", "Edit", "Bash"], "model": "claude-sonnet-5", "skills": ["doctor"], "plugins": [{{"name": "d7y-eval-session", "path": "/eval/plugin", "source": "d7y-eval-session@inline", "version": "0.0.1"}}], "mcp_servers": [], "permissionMode": "dontAsk"}},
-    {{"type": "result", "subtype": "success", "result": "Fake execution complete", "is_error": False, "num_turns": 1, "permission_denials": [], "modelUsage": {{"claude-sonnet-5": {{"provider": "firstParty", "canonicalModel": "claude-sonnet-5"}}}}}}
-]
-
-for event in events:
-    print(json.dumps(event))
-
-sys.exit(0)
-"""
-        self.executable_path.write_text(script)
-        self.executable_path.chmod(0o755)
-
-    def get_invocations(self) -> list[dict]:
-        """Get logged invocations."""
-        invocations = []
-        if self.invocation_log.exists():
-            for line in self.invocation_log.read_text().splitlines():
-                if line.strip():
-                    try:
-                        invocations.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        pass
-        return invocations
+def _write_canonical_repo(repo: Path) -> None:
+    """Seed a disposable repo with the canonical D7Y files the runner reads."""
+    (repo / "initiatives").mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(REPO_ROOT / "initiatives" / "README.md", repo / "initiatives" / "README.md")
+    shutil.copyfile(REPO_ROOT / "d7y", repo / "d7y")
+    (repo / "scripts").mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(REPO_ROOT / "scripts" / "check-initiatives.py", repo / "scripts" / "check-initiatives.py")
+    skill_dir = repo / "skills" / "starting-initiatives"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(REPO_ROOT / "skills" / "starting-initiatives" / "SKILL.md", skill_dir / "SKILL.md")
+    evals_dir = skill_dir / "evals"
+    evals_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(
+        REPO_ROOT / "skills" / "starting-initiatives" / "evals" / "evals.json",
+        evals_dir / "evals.json",
+    )
+    files_dir = evals_dir / "files"
+    files_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(
+        REPO_ROOT / "skills" / "starting-initiatives" / "evals" / "files" / "customer-interview-analysis.md",
+        files_dir / "customer-interview-analysis.md",
+    )
 
 
-class ResistantFakeClaudeCode:
-    """A fake Claude Code that resists termination for timeout testing."""
-
-    def __init__(self, temp_dir: Path):
-        self.temp_dir = temp_dir
-        self.executable_path = temp_dir / "resistant-claude"
-        self._create_resistant_executable()
-
-    def _create_resistant_executable(self):
-        """Create a fake Claude Code that forks a resistant child process."""
-        script = """#!/usr/bin/env python3
-import os
-import signal
-import sys
-import time
-
-# Fork a resistant child process
-child_pid = os.fork()
-if child_pid == 0:
-    # Child process - ignore signals and hang
-    signal.signal(signal.SIGTERM, signal.SIG_IGN)
-    signal.signal(signal.SIGINT, signal.SIG_IGN)
-    time.sleep(300)  # Hang for 5 minutes
-    sys.exit(0)
-
-# Parent process - also hang but emit some output first
-print('{"type": "system", "subtype": "init", "session_id": "resistant-session"}')
-sys.stdout.flush()
-
-time.sleep(300)  # Hang for 5 minutes
-sys.exit(0)
-"""
-        self.executable_path.write_text(script)
-        self.executable_path.chmod(0o755)
+def _git(repo: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(repo), *args], capture_output=True, text=True, check=True
+    )
+    return result.stdout.strip()
 
 
-class TestGitObjectResolution(unittest.TestCase):
-    """Test committed Git object resolution and validation."""
+def make_repo(tmp: Path) -> tuple[Path, str]:
+    """Create and commit a disposable canonical repo; return (path, commit)."""
+    repo = tmp / "repo"
+    repo.mkdir(parents=True)
+    _git(repo, "init")
+    _git(repo, "config", "user.email", "eval@example.com")
+    _git(repo, "config", "user.name", "Eval")
+    _write_canonical_repo(repo)
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "canonical")
+    return repo, _git(repo, "rev-parse", "HEAD")
 
+
+def make_user_settings(tmp: Path, env: dict[str, str] | None = None) -> Path:
+    """A synthetic, tight-mode user settings file with a string-to-string env."""
+    path = tmp / "user-settings.json"
+    path.write_text(json.dumps({"env": env or {"D7Y_EVAL_TEST_TOKEN": "synthetic-token"}}, indent=2))
+    path.chmod(0o600)
+    return path
+
+
+def run_cli(
+    repo: Path,
+    suite: str,
+    case: str,
+    output: Path,
+    *,
+    claude: Path | None = None,
+    commit: str | None = None,
+    dry_run: bool = False,
+    user_settings: Path | None = None,
+    timeout: float | None = None,
+) -> subprocess.CompletedProcess:
+    env = dict(os.environ)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    if user_settings is not None:
+        env["D7Y_EVAL_USER_SETTINGS"] = str(user_settings)
+    cmd = [
+        sys.executable,
+        str(RUNNER),
+        "--source-repo",
+        str(repo),
+        "--suite",
+        suite,
+        "--case",
+        case,
+        "--output",
+        str(output),
+    ]
+    if claude is not None:
+        cmd += ["--claude", str(claude)]
+    if commit is not None:
+        cmd += ["--commit", commit]
+    if dry_run:
+        cmd += ["--dry-run"]
+    if timeout is not None:
+        cmd += ["--timeout", str(timeout)]
+    return subprocess.run(cmd, capture_output=True, text=True, env=env, check=False)
+
+
+# ---------------------------------------------------------------------------
+# Fake Claude executables.
+# ---------------------------------------------------------------------------
+
+
+def _write_fake_claude(path: Path, body: str, *, version: str = "2.1.218") -> None:
+    # Every live-run fake must answer the one-time executable version probe so
+    # the harness resolves it once for both arms, then do its real behavior.
+    version_guard = (
+        "import sys as _sys\n"
+        "if '--version' in _sys.argv:\n"
+        f"    print('Claude Code {version}')\n"
+        "    _sys.exit(0)\n"
+    )
+    full = "#!/usr/bin/env python3\n" + version_guard + body
+    path.write_text(full)
+    path.chmod(0o755)
+
+
+def make_positive_fake(tmp: Path) -> Path:
+    """A fake claude that invokes the skill on positive prompts and does the work.
+
+    The with-skill arm on a positive prompt: emits target Skill invocation, the
+    required d7y list/check Bash commands, writes one valid initiative into the
+    target workspace, and emits a successful result. The baseline arm emits no
+    target invocation. Negative prompts never invoke even with the skill.
+    """
+    fake = tmp / "claude"
+    _write_fake_claude(
+        fake,
+        textwrap.dedent(
+            """
+            import json, os, sys
+
+            argv = sys.argv[1:]
+            plugin = None
+            root = None
+            prompt = ""
+            after = False
+            for i, a in enumerate(argv):
+                if a == "--plugin-dir" and i + 1 < len(argv):
+                    plugin = argv[i + 1]
+                elif a == "--root" and i + 1 < len(argv):
+                    root = argv[i + 1]
+                elif a == "--":
+                    after = True
+                elif after:
+                    prompt += a + " "
+
+            has_skill = bool(plugin and os.path.exists(os.path.join(plugin, "skills", "starting-initiatives", "SKILL.md")))
+            positive = "start an initiative" in prompt
+            sid = f"fake-{os.getpid()}-{has_skill}"
+            tools = ["Skill", "Read", "Write", "Edit", "Bash"]
+            plugin_name = "d7y-eval-session" if has_skill else "d7y-eval-control"
+            skills = ["doctor"]
+            if has_skill:
+                skills = ["d7y-eval-session:starting-initiatives", "doctor"]
+            init = {"type": "system", "subtype": "init", "session_id": sid, "tools": tools,
+                    "model": "claude-sonnet-5", "skills": skills,
+                    "plugins": [{"name": plugin_name, "path": plugin or "", "version": "0.0.1"}],
+                    "mcp_servers": [], "permissionMode": "dontAsk"}
+            print(json.dumps(init))
+            events = []
+            if has_skill and positive:
+                events.append({"type": "assistant", "message": {"role": "assistant", "model": "glm-4.7",
+                    "content": [{"type": "tool_use", "id": "c1", "name": "Skill",
+                    "input": {"skill": "d7y-eval-session:starting-initiatives"}}]}})
+                if root:
+                    events.append({"type": "assistant", "message": {"role": "assistant", "model": "glm-4.7",
+                        "content": [{"type": "tool_use", "id": "c2", "name": "Bash",
+                        "input": {"command": f"d7y initiatives list --root {root} --json"}}]}})
+                    events.append({"type": "assistant", "message": {"role": "assistant", "model": "glm-4.7",
+                        "content": [{"type": "tool_use", "id": "c3", "name": "Bash",
+                        "input": {"command": f"d7y initiatives check --root {root} --json"}}]}})
+                    slug = "consultant-proposals"
+                    idir = os.path.join(root, "initiatives", slug)
+                    os.makedirs(idir, exist_ok=True)
+                    md = ("---\\ntitle: Consultant proposals\\nstatus: active\\ncreated: 2026-07-27\\n"
+                          "updated: 2026-07-27\\naliases: []\\nrelated: []\\n---\\n\\n"
+                          "# Consultant proposals\\n\\n## Provisional intent\\n\\n### Outcome\\n\\nFind need.\\n\\n"
+                          "### Subject\\n\\nConsultants.\\n\\n### Constraints and anti-goals\\n\\nUnknown.\\n\\n"
+                          "## Primary uncertainty\\n\\nNeed.\\n\\n## Current understanding\\n\\n### Evidence\\n\\n"
+                          "None.\\n\\n### Assumptions\\n\\nSome.\\n\\n## Current state\\n\\nNext.\\n")
+                    open(os.path.join(idir, "initiative.md"), "w").write(md)
+                    final = "Created one initiative."
+                else:
+                    final = "Created."
+            elif has_skill and not positive:
+                events.append({"type": "assistant", "message": {"role": "assistant", "model": "glm-4.7",
+                    "content": [{"type": "text", "text": "Just brainstorming names."}]}})
+                final = "Ten names."
+            else:
+                events.append({"type": "assistant", "message": {"role": "assistant", "model": "glm-4.7",
+                    "content": [{"type": "tool_use", "id": "b1", "name": "Skill", "input": {"skill": "list"}}]}})
+                final = "No applicable skill."
+            for e in events:
+                print(json.dumps(e))
+            result = {"type": "result", "subtype": "success", "result": final, "is_error": False,
+                      "num_turns": len(events) + 1, "permission_denials": [],
+                      "modelUsage": {"claude-sonnet-5": {"provider": "firstParty", "canonicalModel": "claude-sonnet-5"}}}
+            print(json.dumps(result))
+            sys.exit(0)
+            """
+        ),
+    )
+    return fake
+
+
+def make_invocation_recording_fake(tmp: Path) -> Path:
+    """A fake claude that records any version/run invocation; never emits success."""
+    fake = tmp / "claude"
+    log = tmp / "claude-invocations.log"
+    _write_fake_claude(
+        fake,
+        textwrap.dedent(
+            f"""
+            import sys, os, json
+            log = {str(log)!r}
+            with open(log, "a") as f:
+                f.write(json.dumps(sys.argv[1:]) + "\\n")
+            sys.exit(0)
+            """
+        ),
+    )
+    return fake
+
+
+def make_resistant_fake(tmp: Path) -> Path:
+    """A fake claude that forks a SIGTERM-resistant child and hangs."""
+    fake = tmp / "claude"
+    _write_fake_claude(
+        fake,
+        textwrap.dedent(
+            """
+            import os, signal, sys, time
+            child = os.fork()
+            if child == 0:
+                signal.signal(signal.SIGTERM, signal.SIG_IGN)
+                signal.signal(signal.SIGINT, signal.SIG_IGN)
+                time.sleep(300)
+                sys.exit(0)
+            print('{"type": "system", "subtype": "init", "session_id": "r"}')
+            sys.stdout.flush()
+            time.sleep(300)
+            sys.exit(0)
+            """
+        ),
+    )
+    return fake
+
+
+def make_malformed_fake(tmp: Path) -> Path:
+    fake = tmp / "claude"
+    _write_fake_claude(
+        fake,
+        textwrap.dedent(
+            """
+            import sys
+            print('{"type": "system", "subtype": "init"}')
+            print('this is not json')
+            sys.exit(0)
+            """
+        ),
+    )
+    return fake
+
+
+def make_nonzero_fake(tmp: Path) -> Path:
+    fake = tmp / "claude"
+    _write_fake_claude(fake, "import sys\nprint('boom')\nsys.exit(3)\n")
+    return fake
+
+
+# ---------------------------------------------------------------------------
+# Narrow unit tests: parser and path primitives.
+# ---------------------------------------------------------------------------
+
+
+class TestPathPrimitives(unittest.TestCase):
+    def test_safe_relative_rejects_absolute_and_traversal(self):
+        with self.assertRaises(run_eval.PreflightError):
+            run_eval.safe_relative_path("/etc/passwd")
+        with self.assertRaises(run_eval.PreflightError):
+            run_eval.safe_relative_path("../escape")
+        with self.assertRaises(run_eval.PreflightError):
+            run_eval.safe_relative_path("")
+
+    def test_control_destination_detection(self):
+        self.assertTrue(run_eval.is_control_destination(Path("settings.json")))
+        self.assertTrue(run_eval.is_control_destination(Path("CLAUDE.md")))
+        self.assertTrue(run_eval.is_control_destination(Path("evals/evals.json")))
+        self.assertTrue(run_eval.is_control_destination(Path("graders/x.py")))
+        self.assertFalse(run_eval.is_control_destination(Path("initiatives/README.md")))
+
+
+class TestParserUnit(unittest.TestCase):
     def setUp(self):
-        self.temp_dir = Path(tempfile.mkdtemp())
-        self.source_repo = Path(tempfile.mkdtemp())
+        self.fixtures = EVALS_DIR / "fixtures" / "claude-code-2.1.218"
 
-        # Initialize a git repo
-        subprocess.run(["git", "init"], cwd=self.source_repo, capture_output=True)
-        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=self.source_repo, capture_output=True)
-        subprocess.run(["git", "config", "user.name", "Test User"], cwd=self.source_repo, capture_output=True)
+    def test_parse_positive_fixture_target_invocation(self):
+        events = run_eval.parse_stream_json((self.fixtures / "positive.jsonl").read_text())
+        count, _ = run_eval.count_target_invocations(events, "d7y-eval-probe:d7y-invocation-probe")
+        self.assertEqual(count, 1)
 
-        # Create a minimal commit
-        (self.source_repo / "test.txt").write_text("test")
-        subprocess.run(["git", "add", "test.txt"], cwd=self.source_repo, capture_output=True)
-        subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=self.source_repo, capture_output=True)
-        self.commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.source_repo, capture_output=True, text=True).stdout.strip()
+    def test_parse_baseline_fixture_skill_list_not_counted(self):
+        events = run_eval.parse_stream_json((self.fixtures / "baseline.jsonl").read_text())
+        count, _ = run_eval.count_target_invocations(events, "d7y-eval-probe:d7y-invocation-probe")
+        self.assertEqual(count, 0)
 
-    def tearDown(self):
-        if self.temp_dir.exists():
-            shutil.rmtree(self.temp_dir)
-        if self.source_repo.exists():
-            shutil.rmtree(self.source_repo)
+    def test_parse_negative_fixture_no_target(self):
+        events = run_eval.parse_stream_json((self.fixtures / "negative.jsonl").read_text())
+        count, _ = run_eval.count_target_invocations(events, "d7y-eval-probe:d7y-invocation-probe")
+        self.assertEqual(count, 0)
 
-    def test_resolve_commit_success(self):
-        """Test resolving a valid commit."""
-        resolved = resolve_commit(self.source_repo, "HEAD")
-        self.assertEqual(len(resolved), 40)  # Full SHA
+    def test_prefix_does_not_count(self):
+        events = [
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Skill", "input": {"skill": "d7y-eval-session:starting-initiatives-extra"}}
+            ]}}
+        ]
+        count, _ = run_eval.count_target_invocations(events, "d7y-eval-session:starting-initiatives")
+        self.assertEqual(count, 0)
 
-    def test_resolve_commit_invalid_ref(self):
-        """Test resolving an invalid ref fails."""
+    def test_malformed_line_raises(self):
         with self.assertRaises(ValueError):
-            resolve_commit(self.source_repo, "invalid-ref")
-
-    def test_verify_commit_exists_success(self):
-        """Test verifying an existing commit."""
-        verify_commit_exists(self.source_repo, self.commit)  # Should not raise
-
-    def test_verify_commit_not_exists(self):
-        """Test verifying a non-existent commit fails."""
-        with self.assertRaises(ValueError):
-            verify_commit_exists(self.source_repo, "0" * 40)
-
-    def test_resolve_git_object_success(self):
-        """Test reading a Git object."""
-        content, object_id = resolve_git_object(self.source_repo, self.commit, "test.txt")
-        self.assertEqual(content, b"test")
-        self.assertEqual(len(object_id), 40)  # Object ID should be full SHA
-
-    def test_resolve_git_object_not_exists(self):
-        """Test reading a non-existent object fails."""
-        with self.assertRaises(ValueError):
-            resolve_git_object(self.source_repo, self.commit, "nonexistent.txt")
-
-    def test_get_source_status_clean(self):
-        """Test getting source status for clean repo."""
-        status = get_source_status(self.source_repo)
-        self.assertEqual(status.strip(), "")
-
-    def test_get_source_status_dirty(self):
-        """Test getting source status for dirty repo."""
-        (self.source_repo / "dirty.txt").write_text("dirty")
-        status = get_source_status(self.source_repo)
-        self.assertIn("dirty.txt", status)
-
-
-class TestPathValidation(unittest.TestCase):
-    """Test path validation for source and destination."""
-
-    def setUp(self):
-        self.temp_dir = Path(tempfile.mkdtemp())
-        self.source_repo = self.temp_dir / "source"
-        self.source_repo.mkdir()
-        self.workspace = self.temp_dir / "workspace"
-        self.workspace.mkdir()
-
-    def tearDown(self):
-        if self.temp_dir.exists():
-            shutil.rmtree(self.temp_dir)
-
-    def test_validate_source_safe_path(self):
-        """Test safe relative path for source."""
-        validate_path_for_source(Path("safe/path"), self.source_repo)  # Should not raise
-
-    def test_validate_source_absolute_path_rejected(self):
-        """Test absolute path rejected for source."""
-        with self.assertRaises(ValueError):
-            validate_path_for_source(Path("/absolute/path"), self.source_repo)
-
-    def test_validate_source_traversal_rejected(self):
-        """Test path traversal rejected for source."""
-        with self.assertRaises(ValueError):
-            validate_path_for_source(Path("../outside"), self.source_repo)
-
-    def test_validate_destination_safe_path(self):
-        """Test safe relative path for destination."""
-        validate_path_for_destination(Path("safe/destination"))  # Should not raise
-
-    def test_validate_destination_absolute_rejected(self):
-        """Test absolute path rejected for destination."""
-        with self.assertRaises(ValueError):
-            validate_path_for_destination(Path("/absolute/destination"))
-
-    def test_validate_destination_traversal_rejected(self):
-        """Test path traversal rejected for destination."""
-        with self.assertRaises(ValueError):
-            validate_path_for_destination(Path("../outside"))
-
-    def test_validate_destination_control_collision(self):
-        """Test control path collision rejected."""
-        with self.assertRaises(ValueError):
-            validate_path_for_destination(Path("settings.json"))
-
-    def test_prevalidate_staging_map(self):
-        """Test complete staging map validation."""
-        files = [
-            {"source": "test.txt", "destination": "test.txt"},
-            {"source": "other.txt", "destination": "other.txt"},
-        ]
-        prevalidate_staging_map(files, self.source_repo, self.workspace)  # Should not raise
-
-    def test_prevalidate_duplicate_destinations(self):
-        """Test duplicate destination detection."""
-        files = [
-            {"source": "test1.txt", "destination": "test.txt"},
-            {"source": "test2.txt", "destination": "test.txt"},
-        ]
-        with self.assertRaises(ValueError) as context:
-            prevalidate_staging_map(files, self.source_repo, self.workspace)
-        self.assertIn("Duplicate destination", str(context.exception))
-
-    def test_prevalidate_existing_file_overwrite(self):
-        """Test existing file overwrite detection."""
-        # Create an existing file
-        (self.workspace / "existing.txt").write_text("existing")
-
-        files = [
-            {"source": "test.txt", "destination": "existing.txt"},
-        ]
-        with self.assertRaises(ValueError) as context:
-            prevalidate_staging_map(files, self.source_repo, self.workspace)
-        self.assertIn("already exists", str(context.exception))
-
-
-class TestWorkspaceIsolation(unittest.TestCase):
-    """Test workspace isolation and safety checks."""
-
-    def setUp(self):
-        self.temp_dir = Path(tempfile.mkdtemp())
-        self.source_repo = Path(tempfile.mkdtemp())
-
-        # Initialize a fake git repo
-        subprocess.run(["git", "init"], cwd=self.source_repo, capture_output=True)
-        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=self.source_repo, capture_output=True)
-        subprocess.run(["git", "config", "user.name", "Test User"], cwd=self.source_repo, capture_output=True)
-
-        # Create a minimal commit
-        (self.source_repo / "test.txt").write_text("test")
-        subprocess.run(["git", "add", "test.txt"], cwd=self.source_repo, capture_output=True)
-        subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=self.source_repo, capture_output=True)
-        self.commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.source_repo, capture_output=True, text=True).stdout.strip()
-
-    def tearDown(self):
-        if self.temp_dir.exists():
-            shutil.rmtree(self.temp_dir)
-        if self.source_repo.exists():
-            shutil.rmtree(self.source_repo)
-
-    def test_create_isolated_workspace(self):
-        """Test creating isolated workspaces."""
-        workspace = create_isolated_workspace(self.temp_dir, "with-skill", "test-case")
-        self.assertTrue(workspace.exists())
-        self.assertTrue(workspace.is_dir())
-
-    def test_verify_isolation_passes_clean_workspace(self):
-        """Test isolation verification passes for clean workspace."""
-        workspace = self.temp_dir / "clean-workspace"
-        workspace.mkdir()
-        verify_isolation(workspace, self.source_repo)  # Should not raise
-
-    def test_verify_isolation_fails_with_eval_definitions(self):
-        """Test isolation verification fails with eval definitions."""
-        workspace = self.temp_dir / "dirty-workspace"
-        workspace.mkdir()
-        (workspace / "evals.json").write_text("{}")
-
-        with self.assertRaises(ValueError) as context:
-            verify_isolation(workspace, self.source_repo)
-        self.assertIn("eval definition", str(context.exception))
-
-    def test_verify_isolation_fails_with_graders(self):
-        """Test isolation verification fails with graders."""
-        workspace = self.temp_dir / "grader-workspace"
-        workspace.mkdir()
-        (workspace / "graders").mkdir()
-
-        with self.assertRaises(ValueError) as context:
-            verify_isolation(workspace, self.source_repo)
-        self.assertIn("graders", str(context.exception))
-
-    def test_verify_no_control_collisions_passes_clean(self):
-        """Test control collision check passes for clean workspace."""
-        workspace = self.temp_dir / "clean-workspace"
-        workspace.mkdir()
-        verify_no_control_collisions(workspace)  # Should not raise
-
-    def test_verify_no_control_collisions_fails_with_settings(self):
-        """Test control collision check fails with settings.json."""
-        workspace = self.temp_dir / "settings-workspace"
-        workspace.mkdir()
-        (workspace / "settings.json").write_text("{}")
-
-        with self.assertRaises(ValueError) as context:
-            verify_no_control_collisions(workspace)
-        self.assertIn("control file", str(context.exception))
-
-    def test_verify_output_root_separate_from_source(self):
-        """Test output root validation passes when separate."""
-        output_dir = self.temp_dir / "output"
-        verify_output_root(output_dir, self.source_repo)  # Should not raise
-
-    def test_verify_output_root_inside_source_fails(self):
-        """Test output root validation fails when inside source."""
-        output_dir = self.source_repo / "output"
-        with self.assertRaises(ValueError) as context:
-            verify_output_root(output_dir, self.source_repo)
-        self.assertIn("outside source repository", str(context.exception))
-
-    def test_verify_output_root_stale_fails(self):
-        """Test output root validation fails when already exists with files."""
-        output_dir = self.temp_dir / "existing-output"
-        output_dir.mkdir()
-        (output_dir / "existing.txt").write_text("existing")
-
-        with self.assertRaises(ValueError) as context:
-            verify_output_root(output_dir, self.source_repo)
-        self.assertIn("already exists", str(context.exception))
-
-
-class TestAuthenticPluginMaterialization(unittest.TestCase):
-    """Test authentic plugin materialization with .claude-plugin layout."""
-
-    def setUp(self):
-        self.temp_dir = Path(tempfile.mkdtemp())
-        self.source_repo = Path(tempfile.mkdtemp())
-
-        # Initialize a git repo with skill
-        subprocess.run(["git", "init"], cwd=self.source_repo, capture_output=True)
-        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=self.source_repo, capture_output=True)
-        subprocess.run(["git", "config", "user.name", "Test User"], cwd=self.source_repo, capture_output=True)
-
-        # Create skills directory and SKILL.md
-        skills_dir = self.source_repo / "skills" / "test-skill"
-        skills_dir.mkdir(parents=True)
-        skill_md = skills_dir / "SKILL.md"
-        skill_md.write_text("---\nname: test-skill\ndescription: Test\n---\n\n# Test Skill\n")
-
-        subprocess.run(["git", "add", "."], cwd=self.source_repo, capture_output=True)
-        subprocess.run(["git", "commit", "-m", "Add skill"], cwd=self.source_repo, capture_output=True)
-        self.commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.source_repo, capture_output=True, text=True).stdout.strip()
-
-    def tearDown(self):
-        if self.temp_dir.exists():
-            shutil.rmtree(self.temp_dir)
-        if self.source_repo.exists():
-            shutil.rmtree(self.source_repo)
-
-    def test_create_authentic_session_plugin_with_skill(self):
-        """Test creating authentic session plugin with target skill."""
-        workspace = self.temp_dir / "workspace"
-        workspace.mkdir()
-
-        plugin_dir = create_authentic_session_plugin(workspace, "test-skill", True, self.source_repo, self.commit)
-
-        # Verify authentic .claude-plugin directory name
-        self.assertEqual(plugin_dir.name, ".claude-plugin")
-        self.assertTrue(plugin_dir.exists())
-
-        self.assertTrue((plugin_dir / "plugin.json").exists())
-        self.assertTrue((plugin_dir / "SKILL.md").exists())
-
-        # Verify plugin manifest
-        plugin_json = json.loads((plugin_dir / "plugin.json").read_text())
-        self.assertEqual(plugin_json["name"], "d7y-eval-session")
-        self.assertIn("test-skill", [s["name"] for s in plugin_json.get("skills", [])])
-
-    def test_create_authentic_session_plugin_without_skill(self):
-        """Test creating authentic session plugin without target skill."""
-        workspace = self.temp_dir / "workspace"
-        workspace.mkdir()
-
-        plugin_dir = create_authentic_session_plugin(workspace, "test-skill", False, self.source_repo, self.commit)
-
-        self.assertTrue(plugin_dir.exists())
-        self.assertTrue((plugin_dir / "plugin.json").exists())
-        self.assertFalse((plugin_dir / "SKILL.md").exists())
-
-    def test_create_control_plugin_authentic_layout(self):
-        """Test creating control plugin with authentic layout."""
-        workspace = self.temp_dir / "workspace"
-        workspace.mkdir()
-
-        plugin_dir = create_control_plugin(workspace)
-
-        # Verify authentic .claude-plugin directory name
-        self.assertEqual(plugin_dir.name, ".claude-plugin")
-        self.assertTrue(plugin_dir.exists())
-        self.assertTrue((plugin_dir / "plugin.json").exists())
-
-        plugin_json = json.loads((plugin_dir / "plugin.json").read_text())
-        self.assertEqual(plugin_json["name"], "d7y-eval-control")
-        self.assertEqual(len(plugin_json.get("skills", [])), 0)
-
-
-class TestCanarySkills(unittest.TestCase):
-    """Test suppression canary creation and leakage detection."""
-
-    def setUp(self):
-        self.temp_dir = Path(tempfile.mkdtemp())
-
-    def tearDown(self):
-        if self.temp_dir.exists():
-            shutil.rmtree(self.temp_dir)
-
-    def test_create_canary_skills(self):
-        """Test creating suppression canary skills."""
-        canary_dir = create_canary_skills(self.temp_dir)
-
-        self.assertTrue(canary_dir.exists())
-        self.assertTrue((canary_dir / "SKILL.md").exists())
-
-        # Verify fake global skill content
-        skill_content = (canary_dir / "SKILL.md").read_text()
-        self.assertIn(FAKE_GLOBAL_SKILL_NAME, skill_content)
-        self.assertIn("canary", skill_content.lower())
-
-    def test_check_canary_leakage_with_skill_discovery(self):
-        """Test canary detection when fake skill is discovered."""
-        events = [
-            {
-                "type": "system",
-                "subtype": "init",
-                "skills": ["doctor", FAKE_GLOBAL_SKILL_NAME]
-            }
-        ]
-
-        canary_ok, issues = check_canary_leakage(events, self.temp_dir)
-        self.assertFalse(canary_ok)
-        self.assertTrue(any("canary global skill discovered" in issue.lower() for issue in issues))
-
-    def test_check_canary_leakage_with_skill_invocation(self):
-        """Test canary detection when fake skill is invoked."""
-        events = [
-            {
-                "type": "assistant",
-                "message": {
-                    "content": [
-                        {
-                            "type": "tool_use",
-                            "name": "Skill",
-                            "input": {"skill": FAKE_GLOBAL_SKILL_NAME}
-                        }
-                    ]
-                }
-            }
-        ]
-
-        canary_ok, issues = check_canary_leakage(events, self.temp_dir)
-        self.assertFalse(canary_ok)
-        self.assertTrue(any("canary global skill invoked" in issue.lower() for issue in issues))
-
-    def test_check_canary_leakage_with_instruction_leakage(self):
-        """Test canary detection when project instruction leaks."""
-        events = [
-            {
-                "type": "assistant",
-                "message": {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": f"Some response with {PROJECT_INSTRUCTION_CANARY} visible"
-                        }
-                    ]
-                }
-            }
-        ]
-
-        canary_ok, issues = check_canary_leakage(events, self.temp_dir)
-        self.assertFalse(canary_ok)
-        self.assertTrue(any("project instruction canary" in issue.lower() for issue in issues))
-
-    def test_check_canary_leakage_clean(self):
-        """Test canary check passes with clean events."""
-        events = [
-            {
-                "type": "system",
-                "subtype": "init",
-                "skills": ["doctor"]
-            },
-            {
-                "type": "assistant",
-                "message": {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": "Clean response without canaries"
-                        }
-                    ]
-                }
-            }
-        ]
-
-        canary_ok, issues = check_canary_leakage(events, self.temp_dir)
-        self.assertTrue(canary_ok)
-        self.assertEqual(len(issues), 0)
-
-
-class TestEnvironmentScrubbing(unittest.TestCase):
-    """Test environment scrubbing and path-leak rejection."""
-
-    def setUp(self):
-        self.temp_dir = Path(tempfile.mkdtemp())
-        self.source_repo = Path(tempfile.mkdtemp())
-        self.d7y_install = self.temp_dir / "d7y-install"
-        self.d7y_install.mkdir()
-
-    def tearDown(self):
-        if self.temp_dir.exists():
-            shutil.rmtree(self.temp_dir)
-        if self.source_repo.exists():
-            shutil.rmtree(self.source_repo)
-
-    def test_build_scrubbed_env_basic(self):
-        """Test basic environment scrubbing."""
-        workspace = self.temp_dir / "workspace"
-        workspace.mkdir()
-        plugin_dir = workspace / ".claude-plugin"
-        plugin_dir.mkdir()
-        settings_path = workspace / "settings.json"
-        settings_path.write_text("{}")
-
-        env = build_scrubbed_env(self.source_repo, workspace, plugin_dir, settings_path, self.d7y_install)
-
-        # Check required keys exist
-        self.assertIn("CLAUDE_CONFIG_DIR", env)
-        self.assertIn("PWD", env)
-        self.assertIn("PATH", env)
-        self.assertEqual(env["CLAUDE_CONFIG_DIR"], str(workspace))
-        self.assertEqual(env["PWD"], str(workspace))
-
-        # Check D7Y installation is in PATH
-        self.assertIn(str(self.d7y_install), env["PATH"])
-
-    def test_build_scrubbed_env_rejects_path_leaks(self):
-        """Test environment scrubbing rejects path leaks."""
-        workspace = self.temp_dir / "workspace"
-        workspace.mkdir()
-        plugin_dir = workspace / ".claude-plugin"
-        plugin_dir.mkdir()
-        settings_path = workspace / "settings.json"
-        settings_path.write_text("{}")
-
-        # Create environment with leaked paths (use non-TEST variable)
-        os.environ["CUSTOM_VAR"] = f"leaked={self.source_repo}"
-
-        with self.assertRaises(ValueError) as context:
-            build_scrubbed_env(self.source_repo, workspace, plugin_dir, settings_path, self.d7y_install)
-        self.assertIn("Environment key", str(context.exception))
-
-        # Clean up
-        del os.environ["CUSTOM_VAR"]
-
-    def test_build_scrubbed_env_provenance_tracking(self):
-        """Test environment provenance tracking."""
-        workspace = self.temp_dir / "workspace"
-        workspace.mkdir()
-        plugin_dir = workspace / ".claude-plugin"
-        plugin_dir.mkdir()
-        settings_path = workspace / "settings.json"
-        settings_path.write_text("{}")
-
-        env = build_scrubbed_env(self.source_repo, workspace, plugin_dir, settings_path, self.d7y_install)
-
-        # Check provenance fields
-        self.assertIn("__D7Y_ENV_SOURCE", env)
-        self.assertIn("__D7Y_ENV_KEYS", env)
-        self.assertIsInstance(env["__D7Y_ENV_SOURCE"], str)
-        self.assertIsInstance(env["__D7Y_ENV_KEYS"], str)
-
-
-class TestExecutableResolution(unittest.TestCase):
-    """Test Claude Code executable resolution and version checking."""
-
-    def setUp(self):
-        self.temp_dir = Path(tempfile.mkdtemp())
-
-    def tearDown(self):
-        if self.temp_dir.exists():
-            shutil.rmtree(self.temp_dir)
-
-    def test_verify_executable_success(self):
-        """Test verifying a valid Claude Code executable."""
-        # Create a fake executable that reports correct version
-        fake_claude_path = self.temp_dir / "claude"
-        fake_claude_path.write_text("#!/bin/sh\necho 'Claude Code 2.1.218'\n")
-        fake_claude_path.chmod(0o755)
-
-        path, version = verify_executable(fake_claude_path)
-        self.assertEqual(path, str(fake_claude_path))
-        self.assertIn("2.1.218", version)
-
-    def test_verify_executable_wrong_version(self):
-        """Test verifying executable with wrong version fails."""
-        fake_claude_path = self.temp_dir / "claude"
-        fake_claude_path.write_text("#!/bin/sh\necho 'Claude Code 1.0.0'\n")
-        fake_claude_path.chmod(0o755)
-
-        with self.assertRaises(ValueError) as context:
-            verify_executable(fake_claude_path)
-        self.assertIn("2.1.218 required", str(context.exception))
-
-    def test_verify_executable_failure(self):
-        """Test verifying executable that fails."""
-        fake_claude_path = self.temp_dir / "claude"
-        fake_claude_path.write_text("#!/bin/sh\nexit 1\n")
-        fake_claude_path.chmod(0o755)
-
-        with self.assertRaises(ValueError) as context:
-            verify_executable(fake_claude_path)
-        self.assertIn("failed", str(context.exception))
-
-
-class TestCommandBuilding(unittest.TestCase):
-    """Test Claude Code command building with exact tool syntax."""
-
-    def setUp(self):
-        self.temp_dir = Path(tempfile.mkdtemp())
-        self.fake_claude = FakeClaudeCode(self.temp_dir)
-        self.workspace = self.temp_dir / "workspace"
-        self.workspace.mkdir()
-        self.plugin_dir = self.workspace / ".claude-plugin"
-        self.plugin_dir.mkdir()
-        self.settings_path = self.workspace / "settings.json"
-        self.settings_path.write_text("{}")
-
-    def tearDown(self):
-        if self.temp_dir.exists():
-            shutil.rmtree(self.temp_dir)
-
-    def test_build_claude_command_with_skill(self):
-        """Test building command for with-skill configuration."""
-        cmd = build_claude_command(
-            self.fake_claude.executable_path,
-            self.workspace,
-            self.plugin_dir,
-            None,
-            self.settings_path,
-            "Test prompt",
-            True,
-        )
-
-        # Check basic structure
-        self.assertIn(str(self.fake_claude.executable_path), cmd)
-        self.assertIn("--print", cmd)
-        self.assertIn("--output-format", cmd)
-        self.assertIn("stream-json", cmd)
-        self.assertIn("--model", cmd)
-        self.assertIn("claude-sonnet-5", cmd)
-        self.assertIn("--permission-mode", cmd)
-        self.assertIn("dontAsk", cmd)
-
-        # Check exact tools argument (not --allow-tool repeats)
-        self.assertIn("--tools", cmd)
-        self.assertIn(EXPECTED_TOOLS_ARG, cmd)
-
-        # Verify no --allow-tool arguments
-        self.assertNotIn("--allow-tool", cmd)
-
-        # Check prompt
-        self.assertIn("Test prompt", cmd)
-
-    def test_build_claude_command_baseline(self):
-        """Test building command for baseline configuration."""
-        cmd = build_claude_command(
-            self.fake_claude.executable_path,
-            self.workspace,
-            self.plugin_dir,
-            None,
-            self.settings_path,
-            "Test prompt",
-            False,
-        )
-
-        # Should still have the exact tools argument
-        self.assertIn("--tools", cmd)
-        self.assertIn(EXPECTED_TOOLS_ARG, cmd)
-
-
-class TestEventParsing(unittest.TestCase):
-    """Test event parsing and validation."""
-
-    def test_parse_stream_json_valid(self):
-        """Test parsing valid stream-json."""
-        stdout = '{"type": "system", "subtype": "init"}\n{"type": "result"}'
-        events = parse_stream_json(stdout)
-        self.assertEqual(len(events), 2)
-        self.assertEqual(events[0]["type"], "system")
-        self.assertEqual(events[1]["type"], "result")
-
-    def test_parse_stream_json_malformed_fails(self):
-        """Test parsing malformed stream-json fails."""
-        stdout = '{"type": "system"}\ninvalid line\n{"type": "result"}'
-        with self.assertRaises(ValueError) as context:
-            parse_stream_json(stdout)
-        self.assertIn("Malformed JSONL", str(context.exception))
-
-    def test_validate_required_events_success(self):
-        """Test validation succeeds with all required events."""
-        events = [
-            {
-                "type": "system",
-                "subtype": "init",
-                "model": EXPECTED_MODEL,
-                "permissionMode": EXPECTED_PERMISSION_MODE,
-                "mcp_servers": EXPECTED_MCP_SERVERS,
-                "tools": EXPECTED_TOOLS_ARG.split(","),
-                "skills": ["test-skill:invoke", "doctor"],
-                "plugins": [{"name": "d7y-eval-session"}],
-            },
-            {"type": "result", "is_error": False}
-        ]
-        valid, errors = validate_required_events(events, True, "test-skill")
-        self.assertTrue(valid)
-        self.assertEqual(len(errors), 0)
-
-    def test_validate_required_events_missing_init(self):
-        """Test validation fails without init event."""
-        events = [{"type": "result"}]
-        valid, errors = validate_required_events(events, True, "test-skill")
-        self.assertFalse(valid)
-        self.assertIn("Missing system.init event", errors)
-
-    def test_validate_required_events_wrong_model(self):
-        """Test validation fails with wrong model."""
-        events = [
-            {
-                "type": "system",
-                "subtype": "init",
-                "model": "wrong-model",
-                "tools": EXPECTED_TOOLS_ARG.split(","),
-                "skills": ["doctor"],
-                "mcp_servers": EXPECTED_MCP_SERVERS,
-                "permissionMode": EXPECTED_PERMISSION_MODE,
-            },
-            {"type": "result"}
-        ]
-        valid, errors = validate_required_events(events, True, "test-skill")
-        self.assertFalse(valid)
-        self.assertTrue(any("Wrong model" in e for e in errors))
-
-    def test_check_skill_invocation_positive(self):
-        """Test skill invocation detection for positive case."""
-        events = [
-            {
-                "type": "assistant",
-                "message": {
-                    "content": [
-                        {
-                            "type": "tool_use",
-                            "name": "Skill",
-                            "input": {"skill": "test-skill:invoke"}
-                        }
-                    ]
-                }
-            }
-        ]
-        invoked, evidence = check_skill_invocation(events, "test-skill")
-        self.assertTrue(invoked)
-        self.assertIn("test-skill", evidence)
-
-    def test_check_skill_invocation_negative(self):
-        """Test skill invocation detection for negative case."""
-        events = [
-            {
-                "type": "assistant",
-                "message": {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": "No skill used"
-                        }
-                    ]
-                }
-            }
-        ]
-        invoked, evidence = check_skill_invocation(events, "test-skill")
-        self.assertFalse(invoked)
-        self.assertIn("No target Skill invocation", evidence)
-
-    def test_check_skill_invocation_baseline_list_not_counted(self):
-        """Test that Skill(list) in baseline is not counted as target invocation."""
-        events = [
-            {
-                "type": "assistant",
-                "message": {
-                    "content": [
-                        {
-                            "type": "tool_use",
-                            "name": "Skill",
-                            "input": {"skill": "list"}
-                        }
-                    ]
-                }
-            }
-        ]
-        invoked, evidence = check_skill_invocation(events, "test-skill")
-        self.assertFalse(invoked)
-        self.assertIn("No target Skill invocation", evidence)
-
-
-class TestCommittedFixtureParsing(unittest.TestCase):
-    """Test parsing of committed JSONL fixtures."""
-
-    def setUp(self):
-        self.temp_dir = Path(tempfile.mkdtemp())
-        self.fixtures_dir = Path(__file__).parent / "fixtures" / "claude-code-2.1.218"
-
-    def tearDown(self):
-        if self.temp_dir.exists():
-            shutil.rmtree(self.temp_dir)
-
-    def test_parse_positive_fixture(self):
-        """Test parsing positive fixture."""
-        fixture_path = self.fixtures_dir / "positive.jsonl"
-        if not fixture_path.exists():
-            self.skipTest("Fixture file not found")
-
-        content = fixture_path.read_text()
-        events = parse_stream_json(content)
-
-        self.assertGreater(len(events), 0)
-        self.assertEqual(events[0]["type"], "system")
-        self.assertEqual(events[0]["subtype"], "init")
-
-        # Check fixture uses only ["Skill"] tools, not full set
-        init_event = events[0]
-        self.assertEqual(init_event["model"], EXPECTED_MODEL)
-        self.assertEqual(init_event["permissionMode"], EXPECTED_PERMISSION_MODE)
-        self.assertEqual(init_event["mcp_servers"], EXPECTED_MCP_SERVERS)
-
-        # Check for target invocation
-        invoked, evidence = check_skill_invocation(events, "d7y-eval-probe")
-        self.assertTrue(invoked, f"Target invocation not found: {evidence}")
-
-    def test_parse_baseline_fixture(self):
-        """Test parsing baseline fixture."""
-        fixture_path = self.fixtures_dir / "baseline.jsonl"
-        if not fixture_path.exists():
-            self.skipTest("Fixture file not found")
-
-        content = fixture_path.read_text()
-        events = parse_stream_json(content)
-
-        self.assertGreater(len(events), 0)
-
-        # Should have Skill(list) but not target skill
-        invoked, evidence = check_skill_invocation(events, "d7y-eval-probe")
-        self.assertFalse(invoked, f"Unexpected target invocation in baseline: {evidence}")
-
-    def test_parse_negative_fixture(self):
-        """Test parsing negative fixture."""
-        fixture_path = self.fixtures_dir / "negative.jsonl"
-        if not fixture_path.exists():
-            self.skipTest("Fixture file not found")
-
-        content = fixture_path.read_text()
-        events = parse_stream_json(content)
-
-        self.assertGreater(len(events), 0)
-
-        # Should not have target invocation
-        invoked, evidence = check_skill_invocation(events, "d7y-eval-probe")
-        self.assertFalse(invoked, f"Unexpected target invocation in negative: {evidence}")
-
-
-class TestDeterministicChecks(unittest.TestCase):
-    """Test deterministic check execution."""
-
-    def setUp(self):
-        self.temp_dir = Path(tempfile.mkdtemp())
-        self.case = {
-            "id": "test-case",
-            "prompt": "Test prompt",
-            "should_trigger": True,
-            "assertions": [
-                {
-                    "id": "invocation-check",
-                    "dimension": "invocation",
-                    "kind": "deterministic",
-                    "required": True,
-                    "description": "Should invoke skill",
-                }
-            ],
+            run_eval.parse_stream_json('{"type": "system"}\nnot json\n')
+
+    def test_canary_leakage_detection(self):
+        leak_init = [{"type": "system", "subtype": "init",
+                      "skills": ["doctor", run_eval.FAKE_GLOBAL_SKILL_NAME]}]
+        clean, issues = run_eval.check_canary_leakage(leak_init)
+        self.assertFalse(clean)
+        leak_text = [{"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "see " + run_eval.PROJECT_INSTRUCTION_CANARY}]}}]
+        clean2, issues2 = run_eval.check_canary_leakage(leak_text)
+        self.assertFalse(clean2)
+
+    def test_routed_model_extraction(self):
+        events = [{"type": "assistant", "message": {"model": "glm-4.7", "content": []}}]
+        self.assertEqual(run_eval.extract_routed_models(events), ["glm-4.7"])
+
+
+class TestValidateArmEvents(unittest.TestCase):
+    def _events(self, **overrides):
+        init = {
+            "type": "system", "subtype": "init", "session_id": "s1",
+            "tools": run_eval.EXPECTED_TOOLS, "model": run_eval.EXPECTED_MODEL,
+            "skills": ["d7y-eval-session:starting-initiatives", "doctor"],
+            "plugins": [{"name": "d7y-eval-session"}], "mcp_servers": [],
+            "permissionMode": "dontAsk",
         }
+        init.update(overrides.get("init", {}))
+        result = {
+            "type": "result", "subtype": "success", "result": "ok", "is_error": False,
+            "num_turns": 1, "permission_denials": [],
+            "modelUsage": {"claude-sonnet-5": {"provider": "firstParty"}},
+        }
+        return [init, result]
+
+    def test_valid_with_skill(self):
+        v = run_eval.validate_arm_events(
+            self._events(), with_skill=True, skill_name="starting-initiatives",
+            expected_plugin="d7y-eval-session", other_session_id=None)
+        self.assertTrue(v.ok, v.errors)
+
+    def test_duplicate_init_rejected(self):
+        events = self._events() + [{"type": "system", "subtype": "init", "session_id": "s2",
+                                    "tools": [], "model": "x", "skills": [], "plugins": [],
+                                    "mcp_servers": [], "permissionMode": "x"}]
+        v = run_eval.validate_arm_events(events, with_skill=True, skill_name="starting-initiatives",
+                                        expected_plugin="d7y-eval-session", other_session_id=None)
+        self.assertFalse(v.ok)
+
+    def test_shared_session_rejected(self):
+        v = run_eval.validate_arm_events(
+            self._events(init={"session_id": "shared"}),
+            with_skill=False, skill_name="starting-initiatives",
+            expected_plugin="d7y-eval-control", other_session_id="shared")
+        self.assertFalse(v.ok)
+
+    def test_full_tool_set_required(self):
+        events = self._events(init={"tools": ["Skill"]})
+        v = run_eval.validate_arm_events(events, with_skill=True, skill_name="starting-initiatives",
+                                        expected_plugin="d7y-eval-session", other_session_id=None)
+        self.assertFalse(v.ok)
+
+    def test_routed_glm_allowed(self):
+        events = self._events()
+        events.insert(1, {"type": "assistant", "message": {"model": "glm-4.7", "content": []}})
+        v = run_eval.validate_arm_events(events, with_skill=True, skill_name="starting-initiatives",
+                                        expected_plugin="d7y-eval-session", other_session_id=None)
+        self.assertTrue(v.ok, v.errors)
+
+
+# ---------------------------------------------------------------------------
+# Public-CLI end-to-end tests in disposable committed repositories.
+# ---------------------------------------------------------------------------
+
+
+class TestPublicCLI(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="d7y-eval-"))
+        self.repo, self.commit = make_repo(self.tmp)
 
     def tearDown(self):
-        if self.temp_dir.exists():
-            shutil.rmtree(self.temp_dir)
+        if self.tmp.exists():
+            shutil.rmtree(self.tmp)
 
-    def test_pair_validity_both_succeed(self):
-        """Test pair validity passes when both arms succeed."""
-        with_skill_result = RunResult("with-skill", success=True)
-        baseline_result = RunResult("baseline", success=True)
+    def test_dry_run_complete_preflight_zero_invocations(self):
+        fake = make_invocation_recording_fake(self.tmp)
+        output = self.tmp / "out"
+        proc = run_cli(self.repo, "skills/starting-initiatives/evals/evals.json",
+                       "start-new-initiative", output, claude=fake, dry_run=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        log = self.tmp / "claude-invocations.log"
+        self.assertFalse(log.exists(), "dry-run must not invoke or version-probe the executable")
+        manifest = json.loads((output / "manifest.json").read_text())
+        self.assertEqual(manifest["commit"], self.commit)
+        self.assertTrue(manifest["dry_run"])
+        self.assertIsNone(manifest["executable"])
+        # Authentic plugin tree with .claude-plugin/plugin.json + skills/.../SKILL.md.
+        plugin_skill = output / "with-skill" / "plugin" / "skills" / "starting-initiatives" / "SKILL.md"
+        self.assertTrue(plugin_skill.exists())
+        plugin_json = output / "with-skill" / "plugin" / ".claude-plugin" / "plugin.json"
+        self.assertEqual(json.loads(plugin_json.read_text())["name"], "d7y-eval-session")
+        self.assertFalse((output / "baseline" / "plugin" / "skills").exists())
+        # Roots are distinct.
+        roots = manifest["roots"]
+        self.assertNotEqual(roots["with_skill_workspace"], roots["baseline_workspace"])
+        self.assertNotEqual(roots["with_skill_plugin"], roots["with_skill_workspace"])
+        # No plugin/settings/canary/control file inside a target workspace.
+        for ws in (output / "with-skill" / "workspace", output / "baseline" / "workspace"):
+            for p in ws.rglob("*"):
+                self.assertNotIn(p.name, {".claude-plugin", "settings.json", "CLAUDE.md"})
+        # Both D7Y capability objects materialized with real object IDs.
+        caps = manifest["capability_object_ids"]
+        self.assertIn("d7y", caps)
+        self.assertIn("scripts/check-initiatives.py", caps)
+        # Seed README staged in both workspaces.
+        self.assertTrue((output / "with-skill" / "workspace" / "initiatives" / "README.md").exists())
+        # Source checkout unchanged.
+        self.assertEqual(_git(self.repo, "status", "--porcelain"), "")
 
-        checks = run_deterministic_checks(self.case, with_skill_result, baseline_result, "test-skill")
-        self.assertEqual(checks["pair_validity"]["status"], "pass")
+    def test_dry_run_argv_uses_one_tools_value_and_root(self):
+        fake = make_invocation_recording_fake(self.tmp)
+        output = self.tmp / "out"
+        proc = run_cli(self.repo, "skills/starting-initiatives/evals/evals.json",
+                       "start-new-initiative", output, claude=fake, dry_run=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        # Dry-run records intended argv (no probe): reconstruct from build helper.
+        argv = run_eval.build_claude_argv(
+            claude_path=str(fake),
+            settings_path=output / "harness-settings.json",
+            plugin_root=output / "with-skill" / "plugin",
+            workspace=output / "with-skill" / "workspace",
+            prompt="anything",
+        )
+        self.assertEqual(argv.count("--tools"), 1)
+        tools_idx = argv.index("--tools")
+        self.assertEqual(argv[tools_idx + 1], run_eval.EXPECTED_TOOLS_ARG)
+        self.assertNotIn("--allow-tool", argv)
+        self.assertIn("--root", argv)
+        self.assertIn("--plugin-dir", argv)
+        self.assertIn("--model", argv)
+        self.assertEqual(argv[argv.index("--model") + 1], run_eval.EXPECTED_MODEL)
 
-    def test_pair_validity_with_skill_fails(self):
-        """Test pair validity fails when with-skill fails."""
-        with_skill_result = RunResult("with-skill", success=False)
-        baseline_result = RunResult("baseline", success=True)
+    def test_live_positive_case_passes_end_to_end(self):
+        fake = make_positive_fake(self.tmp)
+        settings = make_user_settings(self.tmp)
+        output = self.tmp / "out"
+        proc = run_cli(self.repo, "skills/starting-initiatives/evals/evals.json",
+                       "start-new-initiative", output, claude=fake, user_settings=settings)
+        # The positive case has a required rubric assertion that stays pending,
+        # which by contract blocks case pass and a zero exit even when every
+        # deterministic assertion passes.
+        self.assertEqual(proc.returncode, 1, proc.stderr + "\n" + (output / "summary.md").read_text())
+        checks = json.loads((output / "checks.json").read_text())
+        self.assertEqual(checks["pair_validity"]["status"], "pass", checks["pair_validity"])
+        self.assertEqual(checks["treatment_checks"]["status"], "pass")
+        self.assertFalse(checks["case_pass"])
+        # Every required deterministic assertion passed.
+        for a in checks["with_skill_assertions"]:
+            if a["required"] and a["kind"] == "deterministic":
+                self.assertEqual(a["status"], "pass", a)
+        # The only blocker is the required rubric pending assertion.
+        rubric = next(a for a in checks["with_skill_assertions"] if a["kind"] == "rubric")
+        self.assertEqual(rubric["status"], "pending")
+        self.assertTrue(checks["blocking"])
+        # Complete per-arm artifact tree exists.
+        for arm in ("with-skill", "baseline"):
+            d = output / arm / "artifacts"
+            for name in ("trace.jsonl", "stderr.txt", "telemetry.json", "provenance.json",
+                         "command-events.json", "checker.json", "workspace-changes.json",
+                         "validation.json", "process.json"):
+                self.assertTrue((d / name).exists(), name)
+        # Routed model recorded separately from canonical.
+        tel = json.loads((output / "with-skill" / "artifacts" / "telemetry.json").read_text())
+        self.assertEqual(tel["canonical_model"], "claude-sonnet-5")
+        self.assertIn("glm-4.7", tel["routed_models"])
+        # Command-event evidence separate from independent checker evidence.
+        cmds = json.loads((output / "with-skill" / "artifacts" / "command-events.json").read_text())
+        self.assertTrue(cmds["list"] and cmds["check"])
+        checker = json.loads((output / "with-skill" / "artifacts" / "checker.json").read_text())
+        self.assertTrue(checker["valid"])
+        self.assertIsInstance(checker["argv"], list)
+        # Version probed exactly once (both arms share one executable record).
+        prov = json.loads((output / "with-skill" / "artifacts" / "provenance.json").read_text())
+        self.assertEqual(prov["executable_version"], "Claude Code 2.1.218")
+        self.assertEqual(prov["executable"], prov["executable"])  # absolute, reused
+        # The committed D7Y capability bound exactly one absolute executable path.
+        self.assertTrue(prov["executable"].startswith("/"))
+        # Source unchanged.
+        self.assertEqual(_git(self.repo, "status", "--porcelain"), "")
 
-        checks = run_deterministic_checks(self.case, with_skill_result, baseline_result, "test-skill")
+    def test_live_negative_case_requires_absence(self):
+        fake = make_positive_fake(self.tmp)
+        settings = make_user_settings(self.tmp)
+        output = self.tmp / "out"
+        proc = run_cli(self.repo, "skills/starting-initiatives/evals/evals.json",
+                       "casual-brainstorm", output, claude=fake, user_settings=settings)
+        # Negative control: skill available but not invoked -> case still passes
+        # because absence is the expected deterministic outcome.
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        checks = json.loads((output / "checks.json").read_text())
+        inv = next(a for a in checks["with_skill_assertions"] if a["id"] == "does-not-invoke")
+        self.assertEqual(inv["status"], "pass", inv)
+
+    def test_dirty_worktree_replacements_ignored(self):
+        fake = make_positive_fake(self.tmp)
+        settings = make_user_settings(self.tmp)
+        output = self.tmp / "out"
+        proc = run_cli(self.repo, "skills/starting-initiatives/evals/evals.json",
+                       "start-new-initiative", output, claude=fake, user_settings=settings)
+        self.assertNotEqual(proc.returncode, 2, proc.stderr)  # preflight ok
+        staged = json.loads((output / "manifest.json").read_text())["selected_objects"]["with_skill"]
+        committed_ids = {obj["object_id"] for obj in staged}
+        # Now dirty the working tree; rerun uses committed objects only.
+        (self.repo / "initiatives" / "README.md").write_text("DIRTY OVERRIDE")
+        output2 = self.tmp / "out2"
+        proc2 = run_cli(self.repo, "skills/starting-initiatives/evals/evals.json",
+                        "start-new-initiative", output2, claude=fake, user_settings=settings)
+        self.assertNotEqual(proc2.returncode, 2, proc2.stderr)
+        staged2 = json.loads((output2 / "manifest.json").read_text())["selected_objects"]["with_skill"]
+        self.assertEqual({obj["object_id"] for obj in staged2}, committed_ids)
+        # The staged README in the workspace matches committed content, not dirty.
+        ws_readme = output2 / "with-skill" / "workspace" / "initiatives" / "README.md"
+        self.assertNotIn("DIRTY OVERRIDE", ws_readme.read_text())
+
+    def test_committed_symlink_in_skill_rejected(self):
+        # Add a symlink inside the skill tree and commit it.
+        link = self.repo / "skills" / "starting-initiatives" / "README.link"
+        try:
+            os.symlink("../../initiatives/README.md", link)
+        except OSError:
+            self.skipTest("cannot create symlink on this platform")
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "commit", "-m", "symlink")
+        fake = make_positive_fake(self.tmp)
+        settings = make_user_settings(self.tmp)
+        output = self.tmp / "out"
+        proc = run_cli(self.repo, "skills/starting-initiatives/evals/evals.json",
+                       "start-new-initiative", output, claude=fake, user_settings=settings)
+        self.assertNotEqual(proc.returncode, 0)
+
+    def test_output_inside_source_rejected(self):
+        fake = make_invocation_recording_fake(self.tmp)
+        output = self.repo / "inside-output"
+        proc = run_cli(self.repo, "skills/starting-initiatives/evals/evals.json",
+                       "start-new-initiative", output, claude=fake, dry_run=True)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("output root", proc.stderr)
+
+    def test_stale_output_rejected(self):
+        fake = make_invocation_recording_fake(self.tmp)
+        output = self.tmp / "stale"
+        output.mkdir()
+        (output / "leftover.txt").write_text("x")
+        proc = run_cli(self.repo, "skills/starting-initiatives/evals/evals.json",
+                       "start-new-initiative", output, claude=fake, dry_run=True)
+        self.assertNotEqual(proc.returncode, 0)
+
+    def test_env_path_leak_rejected(self):
+        fake = make_positive_fake(self.tmp)
+        # User settings whose value contains the source repo path -> rejected.
+        settings = make_user_settings(self.tmp, env={"LEAK_VAR": str(self.repo)})
+        output = self.tmp / "out"
+        proc = run_cli(self.repo, "skills/starting-initiatives/evals/evals.json",
+                       "start-new-initiative", output, claude=fake, user_settings=settings)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("forbidden path", proc.stderr)
+        # Artifacts never contain the value.
+        if output.exists():
+            for p in output.rglob("*.json"):
+                self.assertNotIn(str(self.repo), p.read_text())
+
+    def test_env_provenance_key_names_only(self):
+        fake = make_positive_fake(self.tmp)
+        settings = make_user_settings(self.tmp, env={"D7Y_EVAL_TEST_TOKEN": "super-secret-value"})
+        output = self.tmp / "out"
+        proc = run_cli(self.repo, "skills/starting-initiatives/evals/evals.json",
+                       "start-new-initiative", output, claude=fake, user_settings=settings)
+        # Exit may be nonzero (required rubric pending), but preflight must pass.
+        self.assertNotEqual(proc.returncode, 2, proc.stderr)
+        manifest = json.loads((output / "manifest.json").read_text())
+        prov = manifest["env_provenance"]
+        self.assertIn("D7Y_EVAL_TEST_TOKEN", prov["imported_keys"])
+        blob = (output / "manifest.json").read_text() + "\n"
+        blob += (output / "with-skill" / "artifacts" / "provenance.json").read_text()
+        blob += (output / "with-skill" / "artifacts" / "telemetry.json").read_text()
+        self.assertNotIn("super-secret-value", blob)
+
+    def test_executable_version_probe_required(self):
+        # Wrong-version fake -> live run fails; version probed at most once.
+        wrong = self.tmp / "claude"
+        wrong.write_text("#!/bin/sh\necho 'Claude Code 1.0.0'\n")
+        wrong.chmod(0o755)
+        output = self.tmp / "out"
+        proc = run_cli(self.repo, "skills/starting-initiatives/evals/evals.json",
+                       "start-new-initiative", output, claude=wrong,
+                       user_settings=make_user_settings(self.tmp))
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("2.1.218", proc.stderr)
+
+    def test_nonzero_run_still_writes_artifacts_and_exits_nonzero(self):
+        fake = make_nonzero_fake(self.tmp)
+        settings = make_user_settings(self.tmp)
+        output = self.tmp / "out"
+        proc = run_cli(self.repo, "skills/starting-initiatives/evals/evals.json",
+                       "start-new-initiative", output, claude=fake, user_settings=settings)
+        self.assertNotEqual(proc.returncode, 0)
+        # Partial artifacts still present.
+        for arm in ("with-skill", "baseline"):
+            self.assertTrue((output / arm / "artifacts" / "process.json").exists())
+        checks = json.loads((output / "checks.json").read_text())
         self.assertEqual(checks["pair_validity"]["status"], "fail")
 
-    def test_invocation_assertion_pass(self):
-        """Test invocation assertion passes when skill invoked."""
-        with_skill_result = RunResult("with-skill", success=True)
-        with_skill_result.events = [
-            {
-                "type": "assistant",
-                "message": {
-                    "content": [
-                        {
-                            "type": "tool_use",
-                            "name": "Skill",
-                            "input": {"skill": "test-skill:invoke"}
-                        }
-                    ]
-                }
-            }
-        ]
+    def test_malformed_stream_marks_arm_error(self):
+        fake = make_malformed_fake(self.tmp)
+        settings = make_user_settings(self.tmp)
+        output = self.tmp / "out"
+        proc = run_cli(self.repo, "skills/starting-initiatives/evals/evals.json",
+                       "start-new-initiative", output, claude=fake, user_settings=settings)
+        self.assertNotEqual(proc.returncode, 0)
+        tel = json.loads((output / "with-skill" / "artifacts" / "telemetry.json").read_text())
+        self.assertIsNotNone(tel["parse_error"])
 
-        baseline_result = RunResult("baseline", success=True)
-        baseline_result.events = []
+    def test_timeout_kills_process_group_and_reaps(self):
+        fake = make_resistant_fake(self.tmp)
+        settings = make_user_settings(self.tmp)
+        output = self.tmp / "out"
+        before = set(self._child_pids())
+        proc = run_cli(self.repo, "skills/starting-initiatives/evals/evals.json",
+                       "start-new-initiative", output, claude=fake, user_settings=settings,
+                       timeout=2)
+        self.assertNotEqual(proc.returncode, 0)
+        # Give the OS a moment, then assert no resistant child survived.
+        time.sleep(1.0)
+        after = set(self._child_pids())
+        leftover = after - before
+        self.assertFalse(leftover, f"child processes survived timeout: {leftover}")
+        proc_json = json.loads((output / "with-skill" / "artifacts" / "process.json").read_text())
+        self.assertTrue(proc_json["timed_out"])
+        self.assertIsNotNone(proc_json["pid"])
 
-        checks = run_deterministic_checks(self.case, with_skill_result, baseline_result, "test-skill")
-        invocation_check = next(c for c in checks["with_skill_assertions"] if c["id"] == "invocation-check")
-        self.assertEqual(invocation_check["status"], "pass")
+    def test_canary_leak_in_run_fails_pair(self):
+        # Fake that emits the canary skill in init -> pair validity fails.
+        fake = self.tmp / "claude"
+        body = (
+            "import json, sys, os\n"
+            "tools=['Skill','Read','Write','Edit','Bash']\n"
+            "print(json.dumps({'type':'system','subtype':'init','session_id':'s','tools':tools,"
+            "'model':'claude-sonnet-5','skills':['doctor', %r],"
+            "'plugins':[{'name':'d7y-eval-session'}],'mcp_servers':[],'permissionMode':'dontAsk'}))\n"
+            "print(json.dumps({'type':'result','subtype':'success','result':'x','is_error':False,"
+            "'num_turns':1,'permission_denials':[],'modelUsage':{'claude-sonnet-5':{}}}))\n"
+            "sys.exit(0)\n"
+        ) % run_eval.FAKE_GLOBAL_SKILL_NAME
+        _write_fake_claude(fake, body)
+        settings = make_user_settings(self.tmp)
+        output = self.tmp / "out"
+        proc = run_cli(self.repo, "skills/starting-initiatives/evals/evals.json",
+                       "start-new-initiative", output, claude=fake, user_settings=settings)
+        self.assertNotEqual(proc.returncode, 0)
+        checks = json.loads((output / "checks.json").read_text())
+        self.assertEqual(checks["pair_validity"]["status"], "fail")
+
+    @staticmethod
+    def _child_pids() -> list[int]:
+        out = subprocess.run(["pgrep", "-f", "resistant|sleep 300"], capture_output=True, text=True)
+        return [int(x) for x in out.stdout.split() if x.strip().isdigit()]
 
 
-class TestDryRun(unittest.TestCase):
-    """Test dry-run functionality."""
-
+class TestFixtureStagingSafety(unittest.TestCase):
     def setUp(self):
-        self.temp_dir = Path(tempfile.mkdtemp())
-        self.fake_claude = FakeClaudeCode(self.temp_dir)
+        self.tmp = Path(tempfile.mkdtemp(prefix="d7y-eval-"))
+        self.repo, self.commit = make_repo(self.tmp)
 
     def tearDown(self):
-        if self.temp_dir.exists():
-            shutil.rmtree(self.temp_dir)
+        if self.tmp.exists():
+            shutil.rmtree(self.tmp)
 
-    def test_dry_run_does_not_invoke_executable(self):
-        """Test that dry-run doesn't invoke or version-probe the executable."""
-        # Run with --dry-run flag would not invoke the fake executable
-        # This is tested by checking no invocations are logged
-        invocations_before = len(self.fake_claude.get_invocations())
+    def test_duplicate_destination_detected(self):
+        case = {"files": [{"source": "evals/files/customer-interview-analysis.md", "destination": "a/b.md"},
+                          {"source": "evals/files/customer-interview-analysis.md", "destination": "a/b.md"}]}
+        ws = self.tmp / "ws"
+        ws.mkdir()
+        with self.assertRaises(run_eval.PreflightError):
+            run_eval.stage_workspace_seed(
+                ws, case=case, repo=self.repo, commit=self.commit,
+                skill_repo_dir="skills/starting-initiatives", seed_repo_paths=[])
 
-        # In a real dry-run, no executable invocation would occur
-        # Here we just verify the test setup
-        invocations_after = len(self.fake_claude.get_invocations())
-        self.assertEqual(invocations_after, invocations_before)
+    def test_control_destination_collision_detected(self):
+        case = {"files": [{"source": "evals/files/customer-interview-analysis.md", "destination": "settings.json"}]}
+        ws = self.tmp / "ws"
+        ws.mkdir()
+        with self.assertRaises(run_eval.PreflightError):
+            run_eval.stage_workspace_seed(
+                ws, case=case, repo=self.repo, commit=self.commit,
+                skill_repo_dir="skills/starting-initiatives", seed_repo_paths=[])
 
 
 if __name__ == "__main__":
-    # Run tests
     unittest.main()

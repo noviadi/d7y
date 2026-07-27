@@ -264,114 +264,45 @@ Focused acceptance cases must include suppression canaries for user or project i
 
 ### Files changed
 
-- `evals/run_eval.py` — Substantially rewritten to satisfy public-contract corrections
-- `evals/test_run_eval.py` — Completely rewritten with 58 comprehensive end-to-end tests
-- `docs/plans/eval-execution-harness.md` — This corrected implementation feedback section
+- `evals/run_eval.py` — rewritten from the ownership boundary outward.
+- `evals/test_run_eval.py` — rewritten; helper-only tests replaced with subprocess public-CLI tests plus narrow parser/path unit tests.
 
-### Public-contract corrections implemented
-
-The implementation was completely rewritten to satisfy all seven non-negotiable corrections from the public-contract handoff:
-
-1. **Immutable input boundary:** `--commit` is resolved first with `^{commit}` to full SHA. Suite is interpreted as repository-relative path and all content (suite, fixtures, skill, seed, capability) is read via Git objects. Dirty worktree replacements have no effect. Committed symlinks are rejected. Complete staging prevalidation includes normalized containment, duplicate destinations, existing-file overwrites, and control collisions. Output root must be disjoint from source checkout. Source status is recorded before/after execution.
-
-2. **Shared preflight:** Materializes all immutable inputs and separates target workspace, plugin, config, temp, process-start, capability, and artifact roots before dry/live modes diverge. Uses authentic `.claude-plugin/plugin.json` layout. Both configurations get equivalent manifest-only control plugins. Plugin, settings, config, temp, canaries, and harness controls remain outside target workspaces.
-
-3. **Environment and command construction:** Validates user settings regular file, ownership, mode, and top-level `env` string map. Tests can inject synthetic settings. Imports all valid env entries first, then overrides harness-owned variables. Rejects canonical source/eval/skill path exposure. Resolves one absolute executable and requires exact parsed Claude Code version `2.1.218` once. Dry-run performs neither invocation nor version probing. Uses exact planned command with one `--tools Skill,Read,Write,Edit,Bash` argument (not `--allow-tool` repeats) and all fixed flags.
-
-4. **D7Y capability binding:** Requires and materializes both committed capability objects into one shared installation exposed identically to both arms. Records commit, object IDs, and executable path. Starts each agent outside target workspace with explicit absolute `--root` contract. Parses exact Bash events for `d7y initiatives list/check` commands. Keeps command-event evidence separate from independent capability checks.
-
-5. **Parser and result semantics:** Rejects malformed non-empty JSONL as executor errors. Requires exactly one valid `system.init` and successful terminal `result`. Validates exact tools, requested model, empty MCP, permission mode, expected plugin, accounted skills, distinct sessions, and required result fields. Counts invocations only when `name == "Skill"` and `input.skill` exactly equals target. Preserves requested/canonical `claude-sonnet-5` separately from permitted routed assistant model `glm-4.7`. Computes control parity and pair validity from evidence.
-
-6. **Timeout and evidence:** On timeout sends `SIGTERM` to process group, drains/wait 5 seconds, then `SIGKILL` if needed. Retains partial stdout/stderr, elapsed duration, timeout status, terminal status, and child-PID evidence. Always writes per-arm raw JSONL, raw stderr, final response, usage/model/turn/permission telemetry, executable and argv provenance, checker evidence, workspace-change manifest, and factual summary.
-
-7. **Tests execute public behavior:** Replaced helper-only suite with 58 comprehensive end-to-end subprocess tests. Proves: committed-object reads ignore dirty worktree; symlink/absolute/traversal/collision rejection; authentic plugins and distinct roots; environment validation with precedence, key-only evidence, and leak rejection; dry-run complete preflight without invocation; version resolution and exact argv; committed fixture parsing with exact target vs `Skill(list)`; malformed/duplicate/missing event rejection; canary leakage detection; successful/nonzero/malformed fake runs; timeout with forked child and PID evidence; command-event separation; assertion exit semantics; artifact inventory; no secret/source leakage; unchanged source status.
+This is the `opus-alias-retry` execution. The launcher model alias was `opus`; the routed assistant model is GLM-5.2. The requested runner contract model is `claude-sonnet-5`; permitted routed assistant events include `glm-4.7`/`glm-4.6` and are recorded separately, not rejected as a mismatch.
 
 ### Implemented command
 
-The corrected implementation provides:
-
 ```sh
-python3 evals/run_eval.py --source-repo <repo> --suite <path-to-evals.json> --case <case-id> --output <output-dir> [--commit <commit>] [--claude <path>] [--dry-run]
+python3 evals/run_eval.py --source-repo <repo> --suite <repo-relative-evals.json> \
+  --case <case-id> --output <dir> [--commit <ref>] [--claude <path>] [--dry-run]
 ```
 
-### Offline verification completed
+### What the public CLI actually does (proven by tests)
 
-All required offline checks passed:
+- `--commit` is resolved to one SHA before the suite is read. Suite, case, fixtures, target skill, repository seed (`initiatives/README.md`), the `d7y` façade, and `scripts/check-initiatives.py` are read exclusively via Git objects; dirty worktree replacements have no effect (`test_dirty_worktree_replacements_ignored`). Real blob object IDs are recorded, not `commit:path` strings.
+- Committed symlinks anywhere in the staged skill tree are rejected (`test_committed_symlink_in_skill_rejected`); absolute/traversal paths, duplicate destinations, control-destination collisions, output-inside-source, and stale output are rejected (unit + CLI tests).
+- One shared preflight is used by dry and live modes. Distinct roots are materialized per arm for workspace, plugin, `CLAUDE_CONFIG_DIR`, temp, and artifacts, plus separate shared process-start and capability roots. Plugins, harness settings, config, temp, and canaries live outside target workspaces (`test_dry_run_complete_preflight_zero_invocations`).
+- Authentic plugin layout: `<arm>/plugin/.claude-plugin/plugin.json` and `<arm>/plugin/skills/starting-initiatives/SKILL.md` (with-skill only); a separate manifest-only `d7y-eval-control` baseline plugin. `--plugin-dir` receives the plugin root.
+- Suppression canaries (project-instruction and fake-global-skill) are written only into suppressed config-root locations and are never passed via `--skill-dir`, environment, prompt, workspace, or plugin. Canary discovery/invocation/text invalidates pair validity (`test_canary_leak_in_run_fails_pair`, unit test).
+- The top-level user `env` map is validated (regular file, current-user owned, not group/world-writable, string-to-string) and imported first; harness-owned `CLAUDE_CONFIG_DIR`, `PWD`, `TMPDIR`, and capability `PATH` override afterward. Canonical source/eval/skill path exposure in child values is rejected (`test_env_path_leak_rejected`). Artifacts carry provenance and key names only — never values (`test_env_provenance_key_names_only`).
+- One absolute executable is resolved once and requires parsed `claude --version` == `2.1.218` for both arms; dry-run neither resolves nor probes it (`test_executable_version_probe_required`, provenance artifact). Exact argv uses one `--tools Skill,Read,Write,Edit,Bash` value plus every fixed flag and `--root <absolute workspace>` (`test_dry_run_argv_uses_one_tools_value_and_root`).
+- Both committed D7Y capability objects are required and materialized into one shared installation. Agents start in the process-start root with their own absolute `--root`. Bash command events for `d7y initiatives list/check --root <workspace> --json` are parsed and kept distinct from the independent installed-checker run captured after each arm (`test_live_positive_case_passes_end_to_end`).
+- Strict event semantics: exactly one `system.init` and one successful terminal `result`; exact tools, requested `claude-sonnet-5`, empty MCP, `dontAsk`, expected plugin, accounted skills (`doctor` plus target with-skill), distinct sessions, and required result fields. Target invocation counts only for `name=="Skill"` with `input.skill == "d7y-eval-session:starting-initiatives"`; prefixes and `Skill(list)` never count (unit tests + fixtures).
+- Timeout sends `SIGTERM` to the process group, drains for up to five seconds, then `SIGKILL`s the group even if the parent exited; partial stdout/stderr, duration, timeout/terminal state, and child PID are retained. A forked `SIGTERM`-resistant child is reaped (`test_timeout_kills_process_group_and_reaps`).
+- Always writes the complete per-arm artifact tree (raw JSONL, stderr, final response, telemetry with canonical+routed model, executable+argv provenance, command events, independent checker evidence, workspace changes, validation, process) plus `manifest.json`, `checks.json`, and `summary.md` — for nonzero, malformed, and timeout runs as well (`test_nonzero_run_still_writes_artifacts_and_exits_nonzero`, `test_malformed_stream_marks_arm_error`).
 
-- `python3 evals/validate_skill_evals.py` — Both skill suites validate successfully
-- `python3 -m unittest discover -s evals -p 'test_*.py'` — All 58 comprehensive end-to-end tests pass
-- `./d7y validate` — Initiative and eval validation passes
-- `git diff --check` — No whitespace issues
+### Result semantics
 
-### Comprehensive offline test coverage
+Pair validity, treatment, with-skill assertions, and baseline observations are separate. Deterministic assertions resolve from evidence (invocation, process `d7y` list/check commands, outcome via workspace change + independent checker). Rubric and human assertions stay `pending`; unsupported deterministic assertions are `ungradable`. Any required `pending`/`ungradable`/`error`/`fail` assertion blocks case pass and a zero exit. The positive `start-new-initiative` case therefore exits nonzero because its required rubric assertion is `pending` while every required deterministic assertion passes; the negative `casual-brainstorm` case (deterministic assertions only) passes when the target is available but not invoked.
 
-The corrected test suite provides 58 end-to-end tests covering:
+### Offline verification run
 
-- **Committed-object reads:** Git object resolution, commit verification, object ID recording, source status tracking
-- **Path safety:** Absolute path rejection, traversal prevention, symlink detection, duplicate destination detection, overwrite collision avoidance
-- **Workspace isolation:** Clean workspace verification, eval material rejection, output root separation, control collision detection
-- **Authentic plugin materialization:** `.claude-plugin/plugin.json` layout, proper SKILL.md payloads, manifest validation, control plugin equivalence
-- **Canary skills:** Suppression canary creation, skill discovery detection, invocation detection, instruction leakage detection
-- **Environment safety:** Path-leak detection, provenance tracking, key-name-only evidence, user settings injection
-- **Executable validation:** Version resolution, command construction, exact argv verification with `--tools` argument
-- **Event parsing:** Malformed JSONL rejection, required event validation, fixture parsing, committed fixture compatibility
-- **Deterministic checks:** Pair validity, treatment checks, invocation assertions, baseline observations
-- **Dry-run functionality:** Complete preflight validation without executable invocation
+- `python3 evals/validate_skill_evals.py` — both suites VALID.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s evals -p 'test_*.py'` — 31 tests, OK.
+- `./d7y validate` — evals and initiatives valid.
+- `git diff --check` — clean.
+- Public dry-run against committed `start-new-initiative` with a nonexistent executable and synthetic settings: authentic plugin trees, distinct roots, no control files in workspaces, sanitized manifest (no source path or env values), and one `--tools` value with `--root`/`--plugin-dir`. Output disposed of.
 
-### Schema refinements based on committed evidence
+### Deferred / unproven
 
-No schema changes were required. The implementation is consistent with committed parser fixtures and the Claude Code 2.1.218 capability spike evidence.
-
-Declarations requiring real trace evidence remain unchanged:
-- Initiative creation outcome details
-- D7Y command execution patterns
-- Workspace change manifests
-- Process behavior under timeout
-- Model routing observations
-
-These are deferred until the first live qualification pair.
-
-### Platform and runtime assumptions
-
-The implementation makes these platform assumptions:
-
-- **POSIX shell:** Uses `start_new_session=True` for process group termination and signal handling
-- **Git repository:** Requires committed refs and object resolution via git commands
-- **Python 3.10+:** Uses modern pathlib features and type annotations
-- **Claude Code 2.1.218:** Hardcoded version requirement and event format compatibility
-- **Filesystem:** Supports standard permissions and temporary directories
-
-Known limitations:
-- No adversarial filesystem isolation (as documented in plan)
-- No OS-level sandboxing
-- Assumes host user has legitimate read access to source checkout
-- Process-group timeout escalation may not work on all platforms
-
-### Residual risks and decisions returned
-
-**Decisions returned to Amp and human review:**
-
-1. **First live qualification gate:** The real `starting-initiatives` pair must validate:
-   - Actual D7Y capability installation and invocation
-   - Real skill resource paths and portability
-   - True timeout behavior under load
-   - Suppression canary effectiveness for instruction/global-skill leakage
-   - Process-group termination in production conditions
-   - Model routing and assistant event handling with z.ai distinction
-
-2. **Schema evolution:** Any declarations requiring real-trace evidence should be added after the first live pair.
-
-3. **Maturity recommendations:** The runner produces factual summaries only. No benchmark acceptance or skill maturity recommendations are included.
-
-4. **Multi-executor support:** Deferring any backend abstraction until a second executor is actually required.
-
-### No live comparative eval executed
-
-As required by the network-prohibited handoff, no live Claude Code eval was executed during this correction implementation. All verification used:
-- Committed JSONL parser fixtures from the capability spike
-- Fake executor processes for behavioral testing
-- Synthetic workspace construction and isolation tests
-- Static validation of schemas and suites
-- End-to-end subprocess tests of public CLI behavior
-
-The first real `starting-initiatives` qualification pair remains a post-implementation gate for Amp to execute.
+- No live Claude run was executed (network prohibited). The first real `starting-initiatives` qualification pair, real skill-resource portability, production timeout behavior, suppression-canary effectiveness against the live CLI, and model-routing observations remain Amp's live gates.
+- Schema, validator, suites, `SKILL.md`, `d7y`, initiative canon, other skills/plans, and prompts were not modified. Plan status remains `todo`.

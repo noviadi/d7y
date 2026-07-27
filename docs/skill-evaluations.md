@@ -51,6 +51,8 @@ evals/runs/<skill>/iteration-<N>/
 
 Commit eval definitions, fixtures, graders, and an accepted benchmark summary. Keep raw traces and generated artifacts uncommitted by default; retain or publish them separately when auditability requires it.
 
+The minimal contributor runner (`python3 evals/run_eval.py`) writes one output directory per invocation rather than the long-lived `evals/runs/...` tree above. Each output contains a sanitized `manifest.json` of selected Git object IDs and roots, a `checks.json` of pair/treatment/assertion results, a factual `summary.md`, and a per-configuration `<arm>/artifacts/` set (raw `trace.jsonl`, `stderr.txt`, `final-response.txt`, `telemetry.json`, executable+argv `provenance.json`, parsed `command-events.json`, independent `checker.json`, `workspace-changes.json`, `validation.json`, and `process.json`). The directory shape is an implementation detail of the runner; the canonical artifact kinds (raw trace, timing/usage, deterministic checks, comparison summary) are unchanged.
+
 ## Minimum suite
 
 Every skill must have `evals/evals.json`. Begin with three realistic cases:
