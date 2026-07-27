@@ -5,7 +5,7 @@ executor: claude-code
 branch: work/<branch-slug>
 worktree: ../d7y-worktrees/<branch-slug>
 permissionProfile: docs-commit | implementation-commit
-commit: allowed | denied
+commit: allowed
 ---
 
 # Objective
@@ -35,7 +35,7 @@ New files are authorized only at the paths listed above. Do not modify this conc
 - Network: prohibited.
 - MCP servers: none (strict-empty).
 - External services and credentials: none.
-- Commit authority: cohesive implementation commits on the assigned branch; stage only writable paths.
+- Commit authority: allowed; make cohesive implementation commits on the assigned branch and stage only writable paths.
 - Lifecycle authority: none. Do not rebase, merge, push, remove worktrees, create/rename/delete branches, amend existing commits, or force any Git operation.
 
 # Verification

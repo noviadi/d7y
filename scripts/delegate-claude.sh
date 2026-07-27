@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-readonly SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
+readonly SCRIPT_PATH="$(readlink -f -- "${BASH_SOURCE[0]:-$0}")"
 readonly PROMPTS_SUBDIR="docs/prompts"
 readonly DEFAULT_PROFILE="docs-commit"
 readonly NETWORK_POLICY="prohibited"
@@ -68,7 +68,8 @@ Runtime posture:
   Network is prohibited. MCP is strict-empty
   (--mcp-config '{"mcpServers":{}}' --strict-mcp-config).
   Sessions are non-persistent (--no-session-persistence). Settings are project-only
-  (--setting-sources project). Output is --output-format stream-json under --print.
+  (--setting-sources project). Output is --verbose --output-format stream-json
+  under --print.
 
 Lifecycle authority: none. The launcher reports branch movement, changed paths,
 commits created, and worktree cleanliness after a real run; it never mutates Git
@@ -212,6 +213,25 @@ rel="${prompt_abs#"$root"/}"
 [[ "$rel" == "$PROMPTS_SUBDIR"/* ]] \
   || die "prompt must live inside $PROMPTS_SUBDIR/ (got $rel)"
 
+cd -- "$root"
+
+[[ "$SCRIPT_PATH" == "$root/scripts/delegate-claude.sh" ]] \
+  || die "invoke the canonical launcher at $root/scripts/delegate-claude.sh"
+
+task_head="$(git rev-parse HEAD)"
+
+prompt_name="${rel#"$PROMPTS_SUBDIR"/}"
+if [[ "$prompt_name" == *.template.md ]]; then
+  die "template prompts cannot be executed; copy it to a concrete <plan-slug>.<execution-slug>.md path"
+fi
+if [[ ! "$prompt_name" =~ ^([a-z0-9]+(-[a-z0-9]+)*)\.([a-z0-9]+(-[a-z0-9]+)*)\.md$ ]]; then
+  die "invalid concrete prompt name '$prompt_name' (expected <plan-slug>.<execution-slug>.md)"
+fi
+plan_slug="${BASH_REMATCH[1]}"
+plan_rel="docs/plans/$plan_slug.md"
+git cat-file -e "$task_head:$plan_rel" 2>/dev/null \
+  || die "concrete prompt has no committed governing plan at $plan_rel"
+
 # Prompt must be tracked, committed, and unchanged.
 git ls-files --error-unmatch -- "$rel" >/dev/null 2>&1 \
   || die "prompt is not tracked by git: $rel (commit it before delegating)"
@@ -221,6 +241,10 @@ prompt_commit="$(git log -1 --format=%H -- "$rel" 2>/dev/null)" \
   || die "could not resolve the commit that introduced the prompt"
 [[ -n "$prompt_commit" ]] \
   || die "prompt has no commit history: $rel"
+prompt_blob="$(git rev-parse "$task_head:$rel" 2>/dev/null)" \
+  || die "prompt is not committed at starting HEAD $task_head: $rel"
+[[ "$(git cat-file -t "$prompt_blob" 2>/dev/null)" == "blob" ]] \
+  || die "committed prompt object is not a blob: $rel"
 
 # Branch must be a non-main work/<slug> branch in a clean worktree.
 branch="$(git rev-parse --abbrev-ref HEAD)"
@@ -232,21 +256,16 @@ branch="$(git rev-parse --abbrev-ref HEAD)"
 require_git_clean \
   || die "worktree is not clean; commit or discard changes before delegating"
 
-task_head="$(git rev-parse HEAD)"
 worktree_path="$(git rev-parse --show-toplevel)"
 claude_version="$(claude --version 2>/dev/null | head -n1 || echo "unknown")"
 
-# Launcher commit: the commit that last touched this script. During the initial
-# bootstrap the launcher is brand new and may not yet be committed; report that
-# honestly rather than fabricating an ID.
-launcher_rel="${SCRIPT_PATH#"$root"/}"
-if git ls-files --error-unmatch -- "$launcher_rel" >/dev/null 2>&1 \
-   && require_git_clean "$launcher_rel"; then
-  launcher_commit="$(git log -1 --format=%H -- "$launcher_rel")"
-  launcher_id="committed $launcher_commit"
-else
-  launcher_id="bootstrap exception; $launcher_rel is untracked or uncommitted"
-fi
+launcher_rel="scripts/delegate-claude.sh"
+git ls-files --error-unmatch -- "$launcher_rel" >/dev/null 2>&1 \
+  || die "canonical launcher is not tracked: $launcher_rel"
+require_git_clean "$launcher_rel" \
+  || die "canonical launcher has uncommitted changes: $launcher_rel"
+launcher_commit="$(git log -1 --format=%H -- "$launcher_rel")"
+launcher_id="committed $launcher_commit"
 
 # ---- allowed matchers (profile defaults + extras) ---------------------------
 
@@ -268,13 +287,14 @@ extra_grants="${extra_tools[*]:-none}"
 
 # ---- runtime envelope -------------------------------------------------------
 
-prompt_bytes="$(wc -c < "$prompt_abs" | tr -d ' ')"
+prompt_bytes="$(git cat-file -s "$prompt_blob")"
 
 read -r -d '' envelope_header <<EOF || true
 Launcher-resolved execution envelope:
 - repository root: $root
 - prompt path: $rel
 - prompt commit: $prompt_commit
+- prompt blob: $prompt_blob
 - launcher commit: $launcher_id
 - task base / starting HEAD: $task_head
 - branch: $branch
@@ -304,7 +324,7 @@ readonly envelope_footer='---END CONCRETE PROMPT---'
 
 cmd=(claude --print --permission-mode dontAsk --tools "$profile_tools"
     --allowed-tools "$allowed_joined" --mcp-config '{"mcpServers":{}}' --strict-mcp-config
-    --setting-sources project --no-session-persistence --output-format stream-json)
+    --setting-sources project --no-session-persistence --verbose --output-format stream-json)
 [[ -n "$model" ]] && cmd+=(--model "$model")
 [[ -n "$effort" ]] && cmd+=(--effort "$effort")
 
@@ -315,7 +335,7 @@ if [[ "$dry_run" -eq 1 ]]; then
   printf '# No Claude Code process was started.\n\n'
   printf '## Resolved envelope\n'
   printf '%s\n' "$envelope_header"
-  cat -- "$prompt_abs"
+  git cat-file blob "$prompt_blob"
   printf '\n%s\n\n' "$envelope_footer"
   printf '## Claude invocation posture\n'
   printf '  claude --print --permission-mode dontAsk \\\n'
@@ -323,7 +343,7 @@ if [[ "$dry_run" -eq 1 ]]; then
   printf '    --allowed-tools %s \\\n' "$allowed_joined"
   printf '    --mcp-config {"mcpServers":{}} --strict-mcp-config \\\n'
   printf '    --setting-sources project --no-session-persistence \\\n'
-  printf '    --output-format stream-json'
+  printf '    --verbose --output-format stream-json'
   [[ -n "$model" ]]  && printf ' \\\n    --model %s' "$model"
   [[ -n "$effort" ]] && printf ' \\\n    --effort %s' "$effort"
   printf ' \\\n    <stdin: envelope + %s verbatim bytes from %s>\n' "$prompt_bytes" "$rel"
@@ -339,29 +359,46 @@ fi
 
 printf 'delegate-claude.sh: starting Claude Code (profile=%s branch=%s base=%s)\n' \
   "$profile" "$branch" "$task_head" >&2
+printf '  prompt            : %s\n' "$rel" >&2
+printf '  prompt commit     : %s\n' "$prompt_commit" >&2
+printf '  prompt blob       : %s\n' "$prompt_blob" >&2
+printf '  launcher commit   : %s\n' "$launcher_commit" >&2
+printf '  worktree          : %s\n' "$worktree_path" >&2
+printf '  Claude Code       : %s\n' "$claude_version" >&2
+printf '  model / effort    : %s / %s\n' "${model:-default}" "${effort:-default}" >&2
+printf '  built-in tools    : %s\n' "$profile_tools" >&2
+printf '  allowed matchers  : %s\n' "$allowed_joined" >&2
+printf '  extra grants      : %s\n' "$extra_grants" >&2
+printf '  runtime posture   : network %s; MCP %s; persistence %s; %s\n' \
+  "$NETWORK_POLICY" "$MCP_POLICY" "$PERSISTENCE_POLICY" "$SETTINGS_NOTE" >&2
+
+stream_handoff() {
+  printf '%s\n' "$envelope_header" || return
+  git cat-file blob "$prompt_blob" || return
+  printf '\n%s\n' "$envelope_footer"
+}
 
 set +e
-{
-  printf '%s\n' "$envelope_header"
-  cat -- "$prompt_abs"
-  printf '\n%s\n' "$envelope_footer"
-} | "${cmd[@]}"
-rc="${PIPESTATUS[1]}"
-set -e
+stream_handoff | "${cmd[@]}"
+pipeline_status=("${PIPESTATUS[@]}")
+producer_rc="${pipeline_status[0]}"
+claude_rc="${pipeline_status[1]}"
+rc="$claude_rc"
+if [[ "$rc" -eq 0 && "$producer_rc" -ne 0 ]]; then
+  rc="$producer_rc"
+fi
 
-new_head="$(git rev-parse HEAD)"
+new_head="$(git rev-parse HEAD 2>/dev/null || printf 'unresolved')"
+current_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || printf 'unresolved')"
 commits_created=0
-if [[ "$new_head" != "$task_head" ]]; then
+if [[ "$new_head" != "unresolved" && "$new_head" != "$task_head" ]]; then
   if git merge-base --is-ancestor "$task_head" "$new_head"; then
     commits_created="$(git rev-list --count "${task_head}..${new_head}")"
   else
     commits_created="unknown (current HEAD is not a descendant of starting HEAD)"
   fi
 fi
-changed_paths="$({
-  git diff --name-only "$task_head" 2>/dev/null
-  git ls-files --others --exclude-standard
-} | awk 'NF' | sort -u)"
+changed_paths="$({ git diff --name-only "$task_head" 2>/dev/null || true; git ls-files --others --exclude-standard 2>/dev/null || true; } | awk 'NF' | sort -u)"
 worktree_clean="no"
 if require_git_clean; then
   worktree_clean="yes"
@@ -369,10 +406,13 @@ fi
 
 printf '\n' >&2
 printf 'delegate-claude.sh: postflight (non-destructive)\n' >&2
-printf '  claude exit status : %s\n' "$rc" >&2
+printf '  input exit status  : %s\n' "$producer_rc" >&2
+printf '  claude exit status : %s\n' "$claude_rc" >&2
+printf '  launcher status    : %s\n' "$rc" >&2
 printf '  starting HEAD      : %s\n' "$task_head" >&2
 printf '  current HEAD       : %s\n' "$new_head" >&2
-printf '  branch             : %s\n' "$branch" >&2
+printf '  starting branch    : %s\n' "$branch" >&2
+printf '  current branch     : %s\n' "$current_branch" >&2
 printf '  commits created    : %s\n' "$commits_created" >&2
 printf '  worktree clean     : %s\n' "$worktree_clean" >&2
 if [[ -n "$changed_paths" ]]; then

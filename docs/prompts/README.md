@@ -57,6 +57,15 @@ A concrete prompt is a complete, self-contained handoff. It must record:
 
 The launcher prepends a **runtime envelope** (repository root, prompt path, prompt commit, launcher commit, task base/starting `HEAD`, branch, worktree, Claude Code version, profile, model/effort, allowed matchers, and the network/MCP/persistence/settings posture) to the committed prompt text. The envelope is resolved at invocation time; the committed prompt carries only the durable handoff.
 
+## Permission profiles
+
+The launcher exposes two reviewed defaults:
+
+- `docs-commit`: built-ins `Read,Edit,Write,Bash`, with `Read`, `Edit`, and `Write` plus narrowly matched Git status, diff, log, show, add, and commit commands.
+- `implementation-commit`: built-ins `Read,Edit,Write,Bash,Glob,Grep`, with all six allowed. Generic `Bash` is a deliberate trust choice for build and test execution, not least privilege or an OS sandbox.
+
+Repeatable `--allow-tool <matcher>` arguments add Claude Code permission matchers. They never execute prompt text and cannot expose a built-in omitted by the profile's `--tools` set. Preserve every required extra matcher in the concrete prompt so review can reconstruct the intended posture.
+
 ## Effective-instruction limitations
 
 A prompt constrains an executor; it does not control it the way code controls a function.
