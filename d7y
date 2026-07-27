@@ -1,51 +1,218 @@
 #!/usr/bin/env bash
-# d7y — thin repository command façade for D7Y development.
+# d7y — thin local command interface for D7Y.
 #
-# Discovers and dispatches to the existing deterministic validators and the
-# Claude Code delegation launcher. It owns command discovery and dispatch only;
-# it contains no domain logic, no persistent state, and no second implementation
-# of any validator or launcher precondition. See docs/plans/root-cli.md.
+# Discovers and dispatches to the deterministic initiative implementation and the
+# Claude Code delegation launcher. User-facing capabilities live at the top level;
+# contributor-only operations are isolated under `dev` or kept as compatibility
+# commands. The façade owns command discovery, target-workspace resolution, and
+# output dispatch only; it contains no domain logic, no persistent state, and no
+# second implementation of any validator or launcher precondition. See
+# docs/plans/root-cli.md and docs/plans/runtime-initiative-cli.md.
 #
-# This is repository tooling, not a workflow engine, durable control plane, or
-# first-class D7Y product-runtime binding.
+# This is a thin deterministic command interface, not a workflow engine, durable
+# control plane, or first-class D7Y product-runtime binding.
 
 set -euo pipefail
 
-# Resolve the repository root from this script's own location so the command
+# Resolve the installation root from this script's own location so the command
 # works regardless of the caller's current directory, including paths with
 # spaces.
 readonly SELF_PATH="$(readlink -f -- "${BASH_SOURCE[0]:-$0}")"
 readonly ROOT="$(dirname -- "$SELF_PATH")"
 
+# Capture the caller's original working directory before changing into the
+# installation root. User-facing capability commands resolve the target workspace
+# from this directory (or an explicit --root), never from the installation root.
+readonly CALLER_CWD="$PWD"
+
 usage() {
   cat <<'EOF'
 Usage: d7y <command> [args...]
 
-Thin repository command façade for D7Y development. It discovers and dispatches
-to the existing deterministic validators and the Claude Code delegation launcher
-without duplicating their behavior.
+Thin local command interface for D7Y. User-facing capabilities are listed first;
+contributor-only operations are isolated under `dev` or kept as compatibility
+commands.
 
-Command groups:
+Capability commands:
+  initiatives list [opts]   List discovery initiatives in a workspace.
+  initiatives check [opts]  Validate initiative organization in a workspace.
+
+Compatibility / development commands:
   validate                     Validate skill evals, then initiatives.
   validate evals [paths...]    Validate skill eval definitions (forwards args).
   validate initiatives [opts]  Validate initiatives (forwards --root, --json).
   dev plans [--all|--done]     List active, all, or completed plans.
   dev delegate [opts] <prompt> Delegate a Claude Code implementation handoff.
 
-The underlying scripts remain directly executable. Leaf options are not
-duplicated here; run "./d7y dev delegate --help" or
-"./d7y validate initiatives --help", or invoke the underlying script directly,
-for detail.
+Run "d7y initiatives list --help" or "d7y initiatives check --help" for leaf
+options. The underlying scripts remain directly executable.
 
-d7y is repository tooling, not a workflow engine, durable control plane, or
-first-class D7Y product-runtime binding.
+d7y is a thin deterministic command interface, not a workflow engine, durable
+control plane, or first-class D7Y product-runtime binding.
 EOF
+}
+
+die() {
+  printf 'd7y: %s\n' "$*" >&2
+  exit 2
 }
 
 die_usage() {
   printf 'd7y: %s\n\n' "$*" >&2
   usage >&2
   exit 2
+}
+
+# Resolve the target workspace root for a user-facing initiative command.
+#   $1 = explicit --root value, or empty for upward discovery from CALLER_CWD.
+# Prints the resolved absolute root and returns 0, or exits 2 with a concise
+# diagnostic recommending --root.
+resolve_workspace_root() {
+  local explicit="${1:-}" resolved discovered
+  if [[ -n "$explicit" ]]; then
+    if [[ ! -e "$explicit" ]]; then
+      die "workspace root does not exist: $explicit (pass --root <path>)"
+    fi
+    resolved="$(readlink -f -- "$explicit")" \
+      || die "cannot resolve --root: $explicit"
+    printf '%s\n' "$resolved"
+    return 0
+  fi
+  if discovered="$(discover_workspace_root "$CALLER_CWD")"; then
+    printf '%s\n' "$discovered"
+    return 0
+  fi
+  die "no workspace found: no initiatives/README.md at or above $CALLER_CWD (pass --root <path>)"
+}
+
+# Walk upward from $1 for the nearest directory containing initiatives/README.md.
+discover_workspace_root() {
+  local dir
+  dir="$(readlink -f -- "${1:-$CALLER_CWD}")" || return 1
+  while :; do
+    if [[ -f "$dir/initiatives/README.md" ]]; then
+      printf '%s\n' "$dir"
+      return 0
+    fi
+    [[ "$dir" == "/" ]] && return 1
+    dir="$(dirname -- "$dir")"
+  done
+}
+
+usage_initiatives() {
+  cat <<'EOF'
+Usage: d7y initiatives <list|check> [opts]
+
+Initiative inventory and validation for one target workspace.
+
+Subcommands:
+  list   List discovery initiatives as a deterministic inventory.
+  check  Validate initiative organization without filtering.
+
+Workspace selection (both subcommands):
+  --root <path>  Target workspace root. When omitted, the nearest ancestor of the
+                 current directory containing initiatives/README.md is used.
+
+Run "d7y initiatives list --help" or "d7y initiatives check --help" for options.
+
+Exit status: 0 valid, 1 invalid workspace or record, 2 usage or unresolvable
+workspace.
+EOF
+}
+
+usage_initiatives_list() {
+  cat <<'EOF'
+Usage: d7y initiatives list [--root <path>] [--status <status>] [--json]
+
+List discovery initiatives in a workspace as a deterministic inventory.
+
+Options:
+  --root <path>      Target workspace root. When omitted, the nearest ancestor of
+                     the current directory containing initiatives/README.md is used.
+  --status <status>  Filter records by status. One of: active, paused, graduated,
+                     archived. The complete workspace is validated before filtering.
+  --json             Emit versioned machine-readable JSON only.
+  -h, --help         Show this help and exit.
+
+Exit status: 0 valid, 1 invalid workspace or record, 2 usage, invalid filter, or
+unresolvable workspace.
+EOF
+}
+
+usage_initiatives_check() {
+  cat <<'EOF'
+Usage: d7y initiatives check [--root <path>] [--json]
+
+Validate initiative organization in a workspace without filtering.
+
+Options:
+  --root <path>  Target workspace root. When omitted, the nearest ancestor of the
+                 current directory containing initiatives/README.md is used.
+  --json         Emit versioned machine-readable JSON only.
+  -h, --help     Show this help and exit.
+
+Exit status: 0 valid, 1 invalid workspace or record, 2 usage or unresolvable
+workspace.
+EOF
+}
+
+run_initiatives() {
+  local subcommand="${1:-}"
+  [[ $# -gt 0 ]] && shift
+  case "$subcommand" in
+    list) run_initiatives_list "$@" ;;
+    check) run_initiatives_check "$@" ;;
+    -h|--help|help) usage_initiatives; return 0 ;;
+    "") die_usage "initiatives requires a subcommand: list | check" ;;
+    *) die_usage "unknown initiatives subcommand: ${subcommand}" ;;
+  esac
+}
+
+run_initiatives_list() {
+  local root_arg="" status_filter="" json=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --root)
+        [[ $# -ge 2 ]] || die_usage "--root requires a value"
+        root_arg="$2"; shift 2 ;;
+      --root=*) root_arg="${1#--root=}"; shift ;;
+      --status)
+        [[ $# -ge 2 ]] || die_usage "--status requires a value"
+        status_filter="$2"; shift 2 ;;
+      --status=*) status_filter="${1#--status=}"; shift ;;
+      --json) json=1; shift ;;
+      -h|--help) usage_initiatives_list; return 0 ;;
+      *) die_usage "unknown initiatives list option: ${1:-}" ;;
+    esac
+  done
+
+  local root
+  root="$(resolve_workspace_root "$root_arg")"
+  local -a args=(--root "$root" --view list)
+  [[ -n "$status_filter" ]] && args+=(--status "$status_filter")
+  [[ "$json" -eq 1 ]] && args+=(--json)
+  exec python3 "$ROOT/scripts/check-initiatives.py" "${args[@]}"
+}
+
+run_initiatives_check() {
+  local root_arg="" json=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --root)
+        [[ $# -ge 2 ]] || die_usage "--root requires a value"
+        root_arg="$2"; shift 2 ;;
+      --root=*) root_arg="${1#--root=}"; shift ;;
+      --json) json=1; shift ;;
+      -h|--help) usage_initiatives_check; return 0 ;;
+      *) die_usage "unknown initiatives check option: ${1:-}" ;;
+    esac
+  done
+
+  local root
+  root="$(resolve_workspace_root "$root_arg")"
+  local -a args=(--root "$root" --view check)
+  [[ "$json" -eq 1 ]] && args+=(--json)
+  exec python3 "$ROOT/scripts/check-initiatives.py" "${args[@]}"
 }
 
 list_plans() {
@@ -95,13 +262,18 @@ EOF
   done
 }
 
-# Every underlying script is invoked from the repository root.
+# Contributor and legacy commands operate from the installation root, matching
+# their existing repository-development behavior.
 cd -- "$ROOT"
 
 case "${1:-}" in
   ""|help|-h|--help)
     usage
     exit 0
+    ;;
+  initiatives)
+    shift
+    run_initiatives "$@"
     ;;
   validate)
     shift
@@ -110,7 +282,7 @@ case "${1:-}" in
         # Aggregate: evals then initiatives, stopping at the first failure.
         # With set -e a failing validator terminates d7y with that exit status.
         python3 evals/validate_skill_evals.py
-        python3 skills/starting-initiatives/scripts/check_initiatives.py --root .
+        python3 scripts/check-initiatives.py --root .
         ;;
       evals)
         shift
@@ -118,7 +290,7 @@ case "${1:-}" in
         ;;
       initiatives)
         shift
-        exec python3 skills/starting-initiatives/scripts/check_initiatives.py "$@"
+        exec python3 scripts/check-initiatives.py "$@"
         ;;
       *)
         die_usage "unknown validate subcommand: ${1:-}"

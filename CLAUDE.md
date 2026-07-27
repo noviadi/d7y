@@ -67,7 +67,7 @@ Scale verification to the change. At minimum:
 - documentation: check links, paths, terminology, and consistency with canon;
 - skills: validate frontmatter, referenced resources, and eval definitions;
 - deterministic scripts: run focused valid and invalid cases and clean temporary artifacts;
-- initiative contracts: run `python3 skills/starting-initiatives/scripts/check_initiatives.py --root .`;
+- initiative contracts: run `./d7y initiatives check` (or `./d7y validate initiatives`);
 - skill eval definitions: run `python3 evals/validate_skill_evals.py`;
 - behavior changes: run isolated evals with an appropriate baseline when an execution harness exists.
 

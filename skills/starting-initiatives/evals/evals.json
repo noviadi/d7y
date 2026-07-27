@@ -22,7 +22,7 @@
           "dimension": "process",
           "kind": "deterministic",
           "required": true,
-          "description": "The initiative checker runs before matching and after creation, with a valid final result."
+          "description": "The initiative CLI runs before matching (`d7y initiatives list --root <workspace> --json`) and after creation (`d7y initiatives check --root <workspace> --json`), each with a valid final result."
         },
         {
           "id": "creates-one-initiative",

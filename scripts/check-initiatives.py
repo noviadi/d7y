@@ -1,5 +1,17 @@
 #!/usr/bin/env python3
-"""Validate and inventory D7Y initiatives without dependencies."""
+"""Shared deterministic implementation for D7Y initiative inventory and validation.
+
+This is the single source of initiative parsing, validation, relationship
+checking, and structured result construction. It is consumed by the user-facing
+``d7y initiatives list`` and ``d7y initiatives check`` commands, by contributor
+validation (``d7y validate`` and ``d7y validate initiatives``), and indirectly by
+the ``starting-initiatives`` skill through the CLI contract.
+
+Parsing, validation, relationship checks, and structured result construction are
+independent from human presentation: ``inventory`` produces one versioned result,
+and the ``check`` and ``list`` views only differ in how they present it. The
+implementation has no dependencies and writes no state.
+"""
 
 from __future__ import annotations
 
@@ -252,7 +264,18 @@ def inventory(root: Path) -> dict[str, object]:
     }
 
 
-def print_text(result: dict[str, object]) -> None:
+def with_status_filter(result: dict[str, object], status: str) -> dict[str, object]:
+    """Return a presentation copy filtered to one status.
+
+    The complete workspace is always validated first; ``valid``, ``errors``, and
+    ``warnings`` keep reflecting the whole workspace. Only ``initiatives`` and
+    ``count`` narrow to the matching records.
+    """
+    matching = [record for record in result["initiatives"] if record.get("status") == status]
+    return {**result, "initiatives": matching, "count": len(matching)}
+
+
+def print_check_text(result: dict[str, object]) -> None:
     status = "valid" if result["valid"] else "invalid"
     print(f"Initiatives: {status} ({result['count']} found)")
     for error in result["errors"]:
@@ -268,18 +291,74 @@ def print_text(result: dict[str, object]) -> None:
             print(f"  WARNING: {warning}")
 
 
+def print_list_text(complete: dict[str, object], displayed: dict[str, object]) -> None:
+    state = "valid" if complete["valid"] else "invalid"
+    total = complete["count"]
+    shown = displayed["count"]
+    if shown == total:
+        print(f"Initiatives in {complete['root']} ({state}, {shown} listed):")
+    else:
+        print(f"Initiatives in {complete['root']} ({state}, {shown} of {total} listed):")
+
+    if not displayed["initiatives"]:
+        print("  (none)")
+    for record in displayed["initiatives"]:
+        slug = record.get("slug", "?")
+        status = record.get("status") or "-"
+        updated = record.get("updated") or "-"
+        title = record.get("title") or "-"
+        suffix = "" if record.get("valid") else "  [invalid]"
+        print(f"  {slug}  {status}  {updated}  {title}{suffix}")
+
+    # Surface workspace and per-record diagnostics from the complete workspace so
+    # malformed artifacts are never silently omitted, even when filtered out.
+    notes: list[str] = []
+    for error in complete["errors"]:
+        notes.append(f"ERROR: {error}")
+    for record in complete["initiatives"]:
+        for error in record.get("errors", []):
+            notes.append(f"{record.get('slug', '?')}: {error}")
+    for warning in complete["warnings"]:
+        notes.append(f"WARNING: {warning}")
+    for record in complete["initiatives"]:
+        for warning in record.get("warnings", []):
+            notes.append(f"{record.get('slug', '?')}: {warning}")
+    if notes:
+        print()
+        for note in notes:
+            print(note)
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--root", type=Path, default=Path.cwd(), help="Discovery repository root")
-    parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    parser = argparse.ArgumentParser(
+        description="Inventory and validate D7Y initiatives without dependencies.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--root", type=Path, default=Path.cwd(), help="Target workspace root (default: cwd)")
+    parser.add_argument(
+        "--status",
+        choices=sorted(ALLOWED_STATUSES),
+        help="Filter records by status (list view only); the workspace is still fully validated",
+    )
+    parser.add_argument(
+        "--view",
+        choices=("check", "list"),
+        default="check",
+        help="Human presentation view (default: check); JSON output is the same versioned shape for both",
+    )
+    parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON only")
     args = parser.parse_args()
 
     result = inventory(args.root.resolve())
+    displayed = with_status_filter(result, args.status) if args.view == "list" and args.status else result
+
     if args.json:
-        json.dump(result, sys.stdout, indent=2)
+        json.dump(displayed, sys.stdout, indent=2)
         print()
+    elif args.view == "list":
+        print_list_text(result, displayed)
     else:
-        print_text(result)
+        print_check_text(displayed)
     return 0 if result["valid"] else 1
 
 

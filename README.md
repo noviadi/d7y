@@ -16,6 +16,18 @@ D7Y is designed around a thin harness, substantial Markdown skills, and determin
 - Read the [agent-native principles](./docs/discovery-workbench-principles.md) for the product's governing discovery principles.
 - See [Developing D7Y](./DEVELOPMENT.md) for the repository layout and local development commands.
 
+## Local commands
+
+D7Y ships a thin local command interface, `./d7y`, for people and agents. Initiative inventory and validation are deterministic and versioned:
+
+```sh
+./d7y initiatives list                                # list initiatives in a workspace
+./d7y initiatives check                               # validate initiative organization
+./d7y initiatives list --root /path/to/workspace --json   # machine-readable inventory
+```
+
+See [Developing D7Y](./DEVELOPMENT.md) for the full command surface. The command interface is part of the workbench itself, not evidence of a fully evaluated host binding.
+
 ## Availability
 
 D7Y is not yet available as a supported end-user runtime. It is being designed to work across agent hosts, with Claude Code as the first planned integration to be evaluated.

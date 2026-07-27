@@ -325,6 +325,18 @@ Host-neutral means **equivalent required behavior**, not identical commands, pat
 
 Claude Code is the first **planned** binding and the first binding to be evaluated. No binding evaluation or capability spike has occurred yet. It is not a fully supported end-user runtime. A binding earns first-class status only when representative evidence covers installation, invocation, required tools and permissions, produced artifacts and provenance, and known limitations. Evidence from one host scopes a claim to that host; it does not by itself prove cross-host portability or complete first-class support.
 
+### Local CLI capability interface
+
+`d7y` is D7Y's local deterministic command and capability interface for people and agents. It exposes capability discovery, target-workspace resolution, deterministic execution, versioned structured output, and stable exit statuses through a thin, dependency-free façade. User-facing capabilities live at the top level, beginning with `d7y initiatives list` and `d7y initiatives check`; contributor-only operations remain visibly isolated under `d7y dev` and compatibility commands.
+
+The boundary from judgment and bindings is deliberate:
+
+- The CLI owns command dispatch, target-workspace resolution, deterministic execution, and the output contract. It does not encode the discovery loop, select an initiative semantically, route agents, or advance lifecycle state.
+- Skills own interpretation, semantic matching, workflow judgment, human checkpoints, and selection of the next discovery move.
+- Host bindings own installation, command availability, model/tool/permission mapping, and trace and provenance capture.
+
+The CLI owns no hidden or duplicate durable state. Canonical initiative state remains ordinary versioned files under `initiatives/`; the CLI reads and validates them but stores no parallel copy. Defining or implementing a capability is not itself evidence of a first-class end-user runtime: installation, invocation, permission, and provenance evidence on a specific host is still required before a binding earns that status.
+
 ## Context and Retrieval
 
 The user should not need to supply all relevant context in every prompt.

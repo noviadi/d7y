@@ -8,6 +8,9 @@ updatedAt: 2026-07-27
 
 # Thin Root CLI
 
+> **Superseded in part by [Runtime Initiative CLI](./runtime-initiative-cli.md).**
+> `d7y` is now D7Y's local command and capability interface, not only repository-development tooling. The historical accepted decisions and implementation feedback below remain valid for the dispatcher behavior; the newer plan extends the top-level surface with user-facing `initiatives list` and `initiatives check` commands and promotes the initiative checker to the shared `scripts/check-initiatives.py` implementation consumed by both surfaces.
+
 ## Outcome
 
 Add an executable `./d7y` at the repository root as the canonical local command façade for D7Y development. It gives developers one discoverable command vocabulary while retaining the existing Bash and Python scripts as independently executable implementation units.

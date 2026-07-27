@@ -207,6 +207,6 @@ Run at least the positive creation case and negative naming control through both
 - `evals/validate_skill_evals.py` — current dependency-free validator.
 - `skills/starting-initiatives/evals/evals.json` — first vertical-slice suite.
 - `skills/writing-great-skills/evals/evals.json` — second current suite to migrate after the check declaration is proven.
-- `skills/starting-initiatives/scripts/check_initiatives.py` — shared deterministic capability used by the first case.
+- `scripts/check-initiatives.py` — shared deterministic initiative capability used by the first case (exposed via `d7y initiatives list`/`check`).
 - [Agent Skills — Evaluating skill output quality](https://agentskills.io/skill-creation/evaluating-skills)
 - [OpenAI — Testing Agent Skills Systematically with Evals](https://developers.openai.com/blog/eval-skills)

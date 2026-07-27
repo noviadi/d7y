@@ -184,7 +184,7 @@ An initiative is a durable investigation of a problem, opportunity, or idea acro
 
 Canonical initiative state lives at `initiatives/<stable-slug>/initiative.md`. Several initiatives may be active. There is no global current pointer; resolve the current initiative from explicit user reference, working path, session context, and semantic fit.
 
-Before changing initiative organization or initiation behavior, read `initiatives/README.md` and `skills/starting-initiatives/SKILL.md`. Use `python3 skills/starting-initiatives/scripts/check_initiatives.py --root .` for deterministic validation.
+Before changing initiative organization or initiation behavior, read `initiatives/README.md` and `skills/starting-initiatives/SKILL.md`. Use `./d7y initiatives check` (or `./d7y validate initiatives`) for deterministic validation.
 
 In workbench-development mode, exercise initiative behavior only through synthetic fixtures or isolated eval runs, not by creating a real initiative.
 

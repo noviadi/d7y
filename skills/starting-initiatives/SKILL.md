@@ -1,7 +1,7 @@
 ---
 name: starting-initiatives
 description: "Starts or resumes a discovery initiative after checking the current session and existing initiatives for the same or related intent. Use when asked to start, open, continue, or decide whether to create an initiative."
-compatibility: Requires Python 3 and a D7Y repository with initiatives/README.md.
+compatibility: Requires a D7Y runtime binding that exposes the initiative CLI capability (`d7y initiatives list` / `d7y initiatives check`), the binding's own runtime, and a workspace whose `initiatives/README.md` has been loaded.
 metadata:
   maturity: provisional
 ---
@@ -49,7 +49,9 @@ If the current initiative still encompasses the request, continue it and skip cr
 
 ## 4. Search before creating
 
-Run `python3 skills/starting-initiatives/scripts/check_initiatives.py --root . --json` to validate the organization and produce the complete deterministic inventory. Preserve and report invalid artifacts; do not silently exclude them from comparison when their intent remains recoverable.
+Run `d7y initiatives list --root <absolute-workspace-root> --json` to validate the organization and produce the complete deterministic inventory. Derive `<absolute-workspace-root>` from the repository whose `initiatives/README.md` you loaded in step 1, not from the process working directory or the skill installation path.
+
+Interpret the result by contract: exit `0` is a valid completed inventory; exit `1` with valid JSON is still a completed inventory that contains contract errors—preserve and report the invalid records rather than treating them as absent; exit `2`, a missing `d7y` command, malformed JSON, or an execution denial means the D7Y runtime capability is unavailable or incomplete, so stop and report it rather than replacing deterministic validation with model reasoning. Preserve and report invalid artifacts; do not silently exclude them from comparison when their intent remains recoverable.
 
 Use the inventory to search active and paused initiatives first, then graduated and archived ones, using:
 
@@ -97,7 +99,7 @@ For `unclear`, present the closest candidates and the material difference, then 
 - Fill known context concisely; mark unknowns and inferences explicitly.
 - Add reciprocal `related` links when another initiative is materially related.
 - Create no additional directories or artifacts until a named need requires them.
-- Run the deterministic checker again and resolve every error introduced by the new artifact.
+- Run `d7y initiatives check --root <absolute-workspace-root> --json` again and resolve every error introduced by the new artifact.
 
 Creation is allowed without another checkpoint when the user explicitly asked to start an initiative and matching is unambiguous. Otherwise propose the selection before creating repository state.
 
@@ -121,6 +123,7 @@ Do not run a full discovery methodology as part of initiation. Invoke or recomme
 
 - **Missing organization contract:** establish or restore the contract before creation.
 - **Checker failure:** preserve existing artifacts, report every deterministic error, and repair only the initiative being created or explicitly selected for maintenance.
+- **Unavailable runtime capability:** if `d7y initiatives` exits `2`, is missing, returns malformed output, or is denied, stop and report the missing or incomplete D7Y binding rather than substituting model reasoning for deterministic validation.
 - **Malformed candidate:** preserve it, report the missing identity fields, and include it in comparison when its intent is recoverable.
 - **Slug collision:** select a distinct stable slug; do not overwrite.
 - **Several strong matches:** classify as unclear and request a choice.

@@ -12,26 +12,30 @@ This guide covers the repository surfaces and local commands used to develop D7Y
 
 Agent contributors must follow the role-specific repository guidance in [`AGENTS.md`](./AGENTS.md) and [`CLAUDE.md`](./CLAUDE.md).
 
-## Repository CLI
+## Local CLI
 
-`./d7y` is the canonical local command façade for repository development. It is a thin, dependency-free Bash dispatcher over the existing validators and Claude delegation launcher; it owns command discovery and deterministic dispatch only.
+`./d7y` is the canonical local command interface for D7Y. It is a thin, dependency-free façade over the deterministic initiative implementation and the Claude delegation launcher; it owns command discovery, target-workspace resolution, and deterministic dispatch only. User-facing capabilities live at the top level; contributor-only operations are isolated under `dev` or kept as compatibility commands.
 
 ```sh
 ./d7y --help
-./d7y validate                    # validate skill evals, then initiatives
-./d7y dev plans                   # list plans that are not done
-./d7y dev plans --all             # include completed plans
-./d7y dev plans --done            # list only completed plans
-./d7y dev delegate <prompt-path>  # delegate a Claude Code implementation handoff
+./d7y initiatives list                    # list initiatives in a workspace
+./d7y initiatives check                   # validate initiative organization
+./d7y validate                            # validate skill evals, then initiatives
+./d7y dev plans                           # list plans that are not done
+./d7y dev plans --all                     # include completed plans
+./d7y dev plans --done                    # list only completed plans
+./d7y dev delegate <prompt-path>          # delegate a Claude Code implementation handoff
 ```
+
+`initiatives list` and `initiatives check` resolve the target workspace from an explicit `--root <path>` or, when omitted, from the nearest ancestor of the current directory containing `initiatives/README.md`. Run `./d7y initiatives list --help` or `./d7y initiatives check --help` for leaf options and exit statuses.
 
 The underlying scripts remain directly executable:
 
 - `python3 evals/validate_skill_evals.py`
-- `python3 skills/starting-initiatives/scripts/check_initiatives.py --root .`
+- `python3 scripts/check-initiatives.py --root .` (shared initiative inventory and validation)
 - `scripts/delegate-claude.sh <prompt-path>`
 
-Use `./d7y --help` to discover command groups and leaf help for detailed options. This CLI is repository tooling, not a workflow engine, durable control plane, or first-class D7Y product-runtime binding.
+Use `./d7y --help` to discover command groups and leaf help for detailed options. The CLI is a thin deterministic command interface, not a workflow engine, durable control plane, or first-class D7Y product-runtime binding.
 
 ## Runtime development direction
 

@@ -320,3 +320,92 @@ Before review, append an `## Implementation Feedback` section containing:
 - runtime and platform assumptions;
 - what was statically validated versus behaviorally exercised;
 - residual risk, especially installation and host-binding evidence not yet established.
+
+## Implementation Feedback
+
+Executor: Claude Code. Branch: `work/runtime-initiative-cli`. Executed from the assigned worktree at `/home/noviadi/Developments/discovery/d7y-worktrees/runtime-initiative-cli`.
+
+### Files changed and moved paths
+
+Promoted (moved, one source of truth retained):
+
+- `skills/starting-initiatives/scripts/check_initiatives.py` → `scripts/check-initiatives.py`. The skill-owned `scripts/` directory is removed (it contained only this file). Core parsing, validation, relationship checks, and structured-result construction are unchanged; `inventory()` remains the single shared implementation.
+
+New surface in the promoted implementation:
+
+- `scripts/check-initiatives.py` gains narrowly scoped presentation and filtering only: `with_status_filter` (filters `initiatives`/`count`, keeps `valid`/`errors`/`warnings` as the complete-workspace values), `print_list_text` (scan-friendly per-line inventory that also surfaces workspace and per-record diagnostics), and `--status` (argparse `choices`-validated) and `--view {check,list}` (default `check`) options. `print_check_text` is the previous `print_text` unchanged, so check output is byte-identical.
+
+Extended CLI:
+
+- `d7y`: added the top-level `initiatives` group (`list`, `check`) with explicit-`--root` and caller-upward workspace resolution, leaf help, and a `CALLER_CWD` capture before the install-root `cd`. `validate`, `validate evals`, `validate initiatives`, `dev plans`, and `dev delegate` keep their prior dispatch; the two internal checker invocations now point at `scripts/check-initiatives.py`. Root help separates capability commands from contributor-only/compatibility commands.
+
+Updated to consume the CLI contract:
+
+- `skills/starting-initiatives/SKILL.md`: step 4 now runs `d7y initiatives list --root <absolute-workspace-root> --json` and interprets exit `0`/`1`/`2` by contract; step 6 runs `d7y initiatives check ...` after mutation; the compatibility frontmatter requires a D7Y binding exposing the initiative CLI; a failure-handling bullet covers an unavailable runtime capability.
+- `skills/starting-initiatives/evals/evals.json`: the deterministic process assertion now observes the canonical CLI capability (`d7y initiatives list` before, `d7y initiatives check` after). Assertion id kept stable (`runs-checker-before-and-after`).
+
+Documentation:
+
+- `docs/discovery-workbench.md`: new "Local CLI capability interface" subsection stating the boundary (CLI owns dispatch/workspace resolution/output; skills own judgment; bindings own installation/permissions/provenance) and that the CLI owns no hidden/duplicate durable state.
+- `DEVELOPMENT.md`: "Repository CLI" → "Local CLI"; user-facing `initiatives` commands distinguished from `dev`/compatibility commands; the development-only characterization removed; checker path updated to `scripts/check-initiatives.py`.
+- `README.md`: concise `initiatives list`/`check` examples with the "not a fully evaluated host binding" caveat.
+- `AGENTS.md` and `CLAUDE.md`: deterministic-validation instructions now reference `./d7y initiatives check` (alias `./d7y validate initiatives`).
+- `docs/plans/root-cli.md`: short supersession note added; historical accepted decisions and implementation feedback preserved unchanged.
+- `docs/plans/eval-execution-harness.md` (status: todo): single "Current Inputs" line updated to the new path so the living plan does not point at a moved file.
+
+Left intentionally unchanged: historical feedback in `docs/plans/development-operating-model.md` (status: done) and the historical command contract in `docs/plans/root-cli.md`, both accurate as records of their own time; immutable prompt artifacts under `docs/prompts/`; and this plan's body (which describes the pre-change problem).
+
+### Exact command checks and exit statuses
+
+Required plan verification:
+
+- `bash -n d7y` → rc `0`.
+- `python3 evals/validate_skill_evals.py` → `VALID: skills/starting-initiatives/evals/evals.json (3 cases)`, `VALID: skills/writing-great-skills/evals/evals.json (3 cases)`, rc `0`.
+- `./d7y validate` → evals (2 suites valid) then `Initiatives: valid (0 found)`, rc `0`. Aggregate check output is byte-identical to the previous behavior.
+- `git diff --check` → rc `0` (clean).
+- `shellcheck d7y` → not run; `shellcheck` is not installed in this environment. `bash -n` was run instead.
+
+Focused command behavior (synthetic workspaces under `/tmp`, removed afterward):
+
+1. `d7y initiatives list --root <valid-empty>` `--json` → `valid true, count 0`, rc `0`.
+2. `d7y initiatives list --root <valid-3-record>` → human inventory in stable slug order (`alpha`, `beta`, `gamma`), rc `0`.
+3. `d7y initiatives list --root <workspace> --status active --json` → `count 2`, slugs `['alpha','gamma']`, valid JSON, rc `0`; workspace still fully validated before filtering.
+4. `d7y initiatives check --root <workspace> --json` → complete unfiltered inventory, `count 3`; byte-identical to `list --json` (no filter), confirming one shared result shape.
+5. Malformed initiative (bad status, missing headings) → present in JSON with its errors, `valid false`, rc `1`.
+6. Missing reciprocal `related` link → rc `1`; check output names the source record and invariant: `INVALID: one ... / ERROR: related initiative 'two' does not link back`.
+7. Exit `2` with empty stdout and no file mutation for: unknown `--status` value (argparse `choices`), missing option value, unknown option, unresolved `--root`, and bare `d7y initiatives` (no subcommand). Verified no workspace files changed by hashing before/after.
+8. From a nested workspace directory with no `--root`, upward discovery resolved the nearest ancestor containing `initiatives/README.md`, rc `0`.
+9. From an unrelated cwd with `--root <absolute-workspace>`, the JSON `root` was the target workspace, not the D7Y checkout — confirming installation location and target workspace are independent.
+10. `d7y validate initiatives --json` → versioned shape, `root` = checkout, `valid true, count 0`, rc `0` (compatible).
+11. Root help lists capability commands first and isolates `dev`/compatibility commands; `initiatives list --help` and `initiatives check --help` are concise and accurate; `initiatives --help` exits `0` while `initiatives` with no subcommand exits `2` (consistent with `dev`).
+
+All synthetic workspaces were created under `mktemp -d /tmp/...` and removed after verification; no real initiative was created and the source checkout was not modified by tests.
+
+### Compatibility results for existing commands
+
+- `d7y validate` (aggregate), `d7y validate evals`, `d7y validate initiatives`, `d7y dev plans [--all|--done]`, and `d7y dev delegate --help` all retain their prior behavior and exit statuses.
+- `validate initiatives` forwards args unchanged to the relocated script with default `--view check`; `--root`/`--json` output is byte-identical. It now exits `0` instead of `2` if passed `--status` or `--view` (the relocated script accepts them, but `check` view applies no filter); the previously documented options (`--root`, `--json`) are unchanged.
+
+### Deviations from this contract
+
+- `validate initiatives --status`/`--view` now succeed (check view, no filtering) instead of erroring, as a side effect of forwarding to the shared implementation. Permitted by the plan's allowance to "forward to the relocated implementation"; documented here for review.
+- `eval-execution-harness.md` (a living `todo` plan) had one "Current Inputs" line repointed to `scripts/check-initiatives.py`. Not in the plan's named doc list, but done to avoid a broken path in a plan that lists current inputs for future work.
+- The `runs-checker-before-and-after` assertion id was kept stable; only its description changed to observe the CLI capability.
+
+### Runtime and platform assumptions
+
+- Bash with `readlink -f` (already a repository dependency via `scripts/delegate-claude.sh`) and Python 3.9+ (`Path.is_relative_to` is used elsewhere in the toolchain; the checker itself needs only standard-library facilities available since 3.7). Python 3.14 was available in this environment.
+- The CLI locates its implementation from the script's own path; the target workspace is resolved from `--root` or upward from the caller's cwd. The two are independent.
+- No package manifest, daemon, registry, plugin framework, or network access was added.
+
+### Static versus behavioral evidence
+
+- Statically validated: `bash -n d7y`; Python compile; `evals/validate_skill_evals.py`; `git diff --check`; manual review of help text, exit codes, and doc consistency.
+- Behaviorally exercised: every focused command case (1–11 above) against synthetic workspaces, including empty/multi/filter/check output, malformed artifacts, missing reciprocal relationships, invalid options/root resolution, nested upward discovery, and unrelated-cwd explicit-root operation.
+- Not exercised: a transferred-host skill eval. The isolated execution harness does not yet exist (`docs/plans/eval-execution-harness.md` is `todo`), so no portability eval case was added; this is recorded as missing behavioral evidence rather than represented as a portability pass. The skill maturity remains `provisional`.
+
+### Residual risk
+
+- Installation and host-binding evidence is not established: `d7y` is not installed globally, not on `PATH`, and no host binding has been evaluated. A transferred skill can rely on the capability only once a binding provides `d7y` on the target host; that evidence is deferred to host-binding work.
+- Upward discovery is a human convenience keyed on `initiatives/README.md`; skills and automation should pass an explicit absolute `--root`, as the skill now does.
+- `shellcheck` was unavailable; only `bash -n` syntax validation was run.
