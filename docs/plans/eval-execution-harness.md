@@ -262,9 +262,9 @@ Focused acceptance cases must include suppression canaries for user or project i
 
 ## Implementation Feedback
 
-### Files changed (public-contract correction)
+### Files changed
 
-- `evals/run_eval.py` — Substantially rewritten to satisfy public-contract corrections  
+- `evals/run_eval.py` — Substantially rewritten to satisfy public-contract corrections
 - `evals/test_run_eval.py` — Completely rewritten with 58 comprehensive end-to-end tests
 - `docs/plans/eval-execution-harness.md` — This corrected implementation feedback section
 
@@ -298,10 +298,10 @@ python3 evals/run_eval.py --source-repo <repo> --suite <path-to-evals.json> --ca
 
 All required offline checks passed:
 
-1. ✅ `python3 evals/validate_skill_evals.py` — Both skill suites validate successfully
-2. ✅ `python3 -m unittest discover -s evals -p 'test_*.py'` — All 58 comprehensive end-to-end tests pass  
-3. ✅ `./d7y validate` — Initiative and eval validation passes
-4. ✅ `git diff --check` — No whitespace issues
+- `python3 evals/validate_skill_evals.py` — Both skill suites validate successfully
+- `python3 -m unittest discover -s evals -p 'test_*.py'` — All 58 comprehensive end-to-end tests pass
+- `./d7y validate` — Initiative and eval validation passes
+- `git diff --check` — No whitespace issues
 
 ### Comprehensive offline test coverage
 
@@ -318,59 +318,13 @@ The corrected test suite provides 58 end-to-end tests covering:
 - **Deterministic checks:** Pair validity, treatment checks, invocation assertions, baseline observations
 - **Dry-run functionality:** Complete preflight validation without executable invocation
 
-- **Committed-object reads:** Git object resolution, commit verification, source status tracking
-- **Path safety:** Absolute path rejection, traversal prevention, symlink detection, control collision avoidance
-- **Workspace isolation:** Clean workspace verification, eval material rejection, output root separation
-- **Plugin materialization:** Authentic target/control plugins, proper SKILL.md payloads, manifest validation
-- **Environment safety:** Path-leak detection, provenance tracking, key-name-only evidence
-- **Executable validation:** Version resolution, command construction, exact argv verification
-- **Event parsing:** Malformed JSONL rejection, required event validation, fixture parsing
-- **Deterministic checks:** Pair validity, treatment checks, invocation assertions
-- **Dry-run functionality:** Preflight validation without executable invocation
-
-### Dry-run command for Amp
-
-Before running the first live pair, Amp should use:
-
-```sh
-python3 evals/run_eval.py \
-  --source-repo /home/noviadi/Developments/discovery/d7y-worktrees/eval-execution-harness \
-  --suite skills/starting-initiatives/evals/evals.json \
-  --case start-new-initiative \
-  --output /tmp/eval-output/starting-initiatives \
-  --commit b169b585762586d41432dc01c3d70ebab92228ba \
-  --claude claude \
-  --dry-run
-```
-
-This validates:
-- Committed ref resolution and object selection
-- Workspace seed materialization and isolation verification
-- Authentic `.claude-plugin/plugin.json` layout
-- Suppression canary materialization
-- Absence of eval material from runtime roots
-- Environment path-leak rejection and provenance tracking
-- Exact argv construction with `--tools` argument (not `--allow-tool` repeats)
-
-### Exact public-contract corrections implemented
-
-**Key fixes from previous rejected implementations:**
-
-1. **Exact tool syntax:** Changed from `--allow-tool <tool>` repeats to single `--tools Skill,Read,Write,Edit,Bash` argument
-2. **Authentic plugin layout:** Uses `.claude-plugin/plugin.json` instead of custom directory names
-3. **Suppression canaries:** Added project instruction and fake global skill canaries for leakage detection
-4. **Immutable input boundary:** All reads via Git objects with object ID recording
-5. **Shared preflight:** Complete materialization before dry/live mode divergence
-6. **Enhanced validation:** Prevalidation of staging map with duplicate/overwrite detection
-7. **Canary leakage detection:** Runtime checks for canary skill discovery/invocation and instruction leakage
-
 ### Schema refinements based on committed evidence
 
 No schema changes were required. The implementation is consistent with committed parser fixtures and the Claude Code 2.1.218 capability spike evidence.
 
 Declarations requiring real trace evidence remain unchanged:
 - Initiative creation outcome details
-- D7Y command execution patterns  
+- D7Y command execution patterns
 - Workspace change manifests
 - Process behavior under timeout
 - Model routing observations
@@ -382,7 +336,7 @@ These are deferred until the first live qualification pair.
 The implementation makes these platform assumptions:
 
 - **POSIX shell:** Uses `start_new_session=True` for process group termination and signal handling
-- **Git repository:** Requires committed refs and object resolution via git commands  
+- **Git repository:** Requires committed refs and object resolution via git commands
 - **Python 3.10+:** Uses modern pathlib features and type annotations
 - **Claude Code 2.1.218:** Hardcoded version requirement and event format compatibility
 - **Filesystem:** Supports standard permissions and temporary directories
@@ -395,16 +349,8 @@ Known limitations:
 
 ### Residual risks and decisions returned
 
-**Corrected risks:**
-- **Public contract satisfaction:** Exact `--tools` argument syntax matches Claude Code requirements
-- **Authentic plugin layout:** `.claude-plugin/plugin.json` format ensures proper skill discovery
-- **Canary effectiveness:** Suppression canaries detect instruction/global-skill leakage
-- **Immutable source:** Git object resolution ensures committed source with object ID recording
-- **Workspace isolation:** Multi-layer verification prevents eval leakage
-- **Environment safety:** Path-leak detection protects source checkout with key-name-only evidence
-- **Process termination:** Process-group timeout with escalation ensures cleanup
-
 **Decisions returned to Amp and human review:**
+
 1. **First live qualification gate:** The real `starting-initiatives` pair must validate:
    - Actual D7Y capability installation and invocation
    - Real skill resource paths and portability
@@ -423,55 +369,9 @@ Known limitations:
 
 As required by the network-prohibited handoff, no live Claude Code eval was executed during this correction implementation. All verification used:
 - Committed JSONL parser fixtures from the capability spike
-- Fake executor processes for behavioral testing  
-- Synthetic workspace construction and isolation tests
-- Static validation of schemas and suites
-- End-to-end subprocess tests of public CLI behavior
-
-The first real `starting-initiatives` qualification pair remains a post-implementation gate for Amp to execute.
-
-The implementation makes these platform assumptions:
-
-- **POSIX shell:** Uses `start_new_session=True` for process group termination
-- **Git repository:** Requires committed refs and object resolution
-- **Python 3.10+:** Uses type annotations and modern pathlib features
-- **Claude Code 2.1.218:** Hardcoded version requirement and event format
-- **Filesystem:** Supports standard permissions and temporary directories
-
-Known limitations:
-- No adversarial filesystem isolation (as documented in plan)
-- No OS-level sandboxing
-- Assumes host user has legitimate read access to source checkout
-- Process-group timeout escalation may not work on all platforms
-
-### Residual risks and decisions returned
-
-**Resolved risks:**
-- **Event format stability:** Committed parser fixtures provide stable test coverage
-- **Workspace isolation:** Multi-layer verification prevents eval leakage
-- **Environment safety:** Path-leak detection protects source checkout
-- **Process termination:** Process-group timeout with escalation ensures cleanup
-
-**Decisions returned to Amp and human review:**
-1. **First live qualification gate:** The real `starting-initiatives` pair must validate:
-   - Actual D7Y capability installation and invocation
-   - Real skill resource paths and portability
-   - True timeout behavior under load
-   - Suppression canary effectiveness for instruction leakage
-   - Process-group termination in production conditions
-
-2. **Schema evolution:** Any declarations requiring real-trace evidence should be added after the first live pair, not before.
-
-3. **Maturity recommendations:** The runner produces factual summaries only. No benchmark acceptance or skill maturity recommendations are included.
-
-4. **Multi-executor support:** Deferring any backend abstraction until a second executor is actually required.
-
-### No live comparative eval executed
-
-As required by the network-prohibited handoff, no live Claude Code eval was executed during this implementation. All verification used:
-- Committed JSONL parser fixtures from the capability spike
 - Fake executor processes for behavioral testing
 - Synthetic workspace construction and isolation tests
 - Static validation of schemas and suites
+- End-to-end subprocess tests of public CLI behavior
 
 The first real `starting-initiatives` qualification pair remains a post-implementation gate for Amp to execute.
