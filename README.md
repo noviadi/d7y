@@ -10,34 +10,15 @@ The goal is not to generate the most ideas, documents, or code. It is to reduce 
 
 D7Y is designed around a thin harness, substantial Markdown skills, and deterministic tools for repeatable execution and verification.
 
-## Repository
+## Learn more
 
-- [`docs/`](./docs/) contains the charter, principles, and evaluation contract.
-- [`skills/`](./skills/) contains reusable discovery procedures and their eval suites.
-- [`evals/`](./evals/) contains shared schemas and deterministic eval tooling.
-- [`initiatives/`](./initiatives/) defines the durable unit and organization of discovery work.
+- Read the [workbench charter](./docs/discovery-workbench.md) for D7Y's architecture, boundaries, and success criteria.
+- Read the [agent-native principles](./docs/discovery-workbench-principles.md) for the product's governing discovery principles.
+- See [Developing D7Y](./DEVELOPMENT.md) for the repository layout and local development commands.
 
-Start with the [workbench charter](./docs/discovery-workbench.md) and [agent-native principles](./docs/discovery-workbench-principles.md).
+## Availability
 
-## Repository CLI
-
-`./d7y` is the canonical local command façade for repository development: a thin, dependency-free Bash dispatcher over the existing validators and the Claude delegation launcher. It owns command discovery and deterministic dispatch only.
-
-```sh
-./d7y validate                    # validate skill evals, then initiatives
-./d7y dev plans                   # list plans that are not done
-./d7y dev plans --all             # include completed plans
-./d7y dev plans --done            # list only completed plans
-./d7y dev delegate <prompt-path>  # delegate a Claude Code implementation handoff
-```
-
-The underlying scripts (`evals/validate_skill_evals.py`, `skills/starting-initiatives/scripts/check_initiatives.py`, and `scripts/delegate-claude.sh`) remain directly executable; `./d7y --help` lists the supported command groups. This is repository tooling, not a workflow engine, durable control plane, or first-class D7Y product-runtime binding.
-
-## Runtime direction
-
-D7Y's required behavior is **host-neutral**: skill behavior, initiative and artifact semantics, evidence standards, checkpoints, and deterministic capability contracts are owned by canon, independent of the agent host that runs them. A host **binding** provides the concrete realization—skill loading, instruction discovery, invocation routing, model/tool/permission mapping, command access, and trace capture.
-
-Host-neutral means equivalent required behavior, not identical commands, paths, or configuration. **Claude Code is the first planned binding and the first binding to be evaluated.** No binding evaluation has occurred yet; it is not a fully supported end-user runtime, and a binding earns first-class status only when representative evidence covers installation, invocation, required tools and permissions, produced artifacts and provenance, and known limitations.
+D7Y is not yet available as a supported end-user runtime. It is being designed to work across agent hosts, with Claude Code as the first planned integration to be evaluated.
 
 ## Status
 
