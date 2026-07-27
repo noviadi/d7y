@@ -1,7 +1,7 @@
 ---
 title: Runtime Initiative CLI
 type: feat
-status: ready
+status: done
 createdAt: 2026-07-27
 updatedAt: 2026-07-27
 ---
