@@ -14,7 +14,9 @@ Implement the smallest local runner that can produce inspectable comparative evi
 
 This is D7Y infrastructure, not a general eval framework. The first increment supports one verified agent executor, a no-skill baseline, sequential runs, and the assertions needed by the current suites. It does not automate qualitative judgment, benchmark acceptance, or skill maturity.
 
-Start by probing Amp because it is D7Y's current agent environment and locally exposes non-interactive execution, stream JSON, custom settings, and skill management. Amp becomes the first executor only if a capability spike proves that it can isolate the target skill and expose trustworthy evidence. If Amp cannot meet the validity gates, probe Codex and then Claude Code and implement only the first runtime that passes. Do not build a multi-backend abstraction in this increment.
+Start by probing Claude Code because it is the first intended D7Y product host binding—not because Claude Code implements the runner. Claude Code becomes the first executor only if a capability spike proves that it can isolate the target skill and expose trustworthy evidence. If Claude Code cannot meet the validity gates, record the failed gate and return the decision to Amp and the human before narrowing the binding, stopping, or probing another host strictly as internal eval infrastructure. Implement only the first runtime that passes. Do not build a multi-backend abstraction in this increment.
+
+Passing the eval-runner gates establishes only compatibility with this bounded eval execution contract. It does not establish complete first-class D7Y runtime support on that host.
 
 ## Problem Framing
 
@@ -49,7 +51,7 @@ Current deterministic assertions are natural-language claims rather than executa
 
 - A local Python 3 command under `evals/`, using the standard library where practical.
 - A capability spike followed by exactly one implemented agent executor.
-- Amp as the first runtime to probe; Codex and Claude Code are fallbacks, not production dependencies selected in advance.
+- Claude Code as the first runtime to probe because it is the first intended product host binding; Amp and Codex are fallbacks for internal eval infrastructure only, not production dependencies selected in advance.
 - A committed Git revision as the source of the suite, fixtures, runtime skill payload, deterministic dependencies, and workspace seed.
 - Separate with-skill and no-skill workspaces with neutral eval instructions.
 - Sequential execution of one selected case or the cases in one current D7Y suite.
@@ -104,7 +106,7 @@ factual comparison summary with no maturity decision
 
 ### Executor selection gate
 
-Use a disposable synthetic skill and positive and negative prompts before implementing the runner. Probe Amp first. A runtime qualifies only if a recorded spike demonstrates:
+Use a disposable synthetic skill and positive and negative prompts before implementing the runner. Probe Claude Code first. A runtime qualifies only if a recorded spike demonstrates:
 
 1. fresh non-interactive contexts with no session reuse;
 2. suppression or exact accounting of user and project instructions, skills, plugins, hooks, MCP servers, and mutable settings;
@@ -114,7 +116,7 @@ Use a disposable synthetic skill and positive and negative prompts before implem
 6. workspace-scoped writes and a controlled tool and permission set;
 7. runtime, model or mode, effective skill set, configuration, and usage metadata sufficient to scope the result.
 
-For Amp, verify the live behavior of `--execute`, `--stream-json`, `--settings-file`, `amp skill add --target`, and `amp skill list --json`; their presence in `--help` is not proof that isolation works. If Amp fails a core isolation or observability gate, record the reason and probe Codex, then Claude Code. Stop if no installed runtime can support an honest comparison.
+For Claude Code, verify the live behavior of its non-interactive execution mode, structured event output, settings or permission scoping, and skill installation and listing; the presence of a flag in `--help` is not proof that isolation works. If Claude Code fails a core isolation or observability gate, record the failed gate and return the decision to Amp and the human before probing Amp or Codex strictly as internal eval infrastructure. Stop if no installed runtime can support an honest comparison.
 
 The selected runtime's command construction and event parsing may live in one clearly named module or function. Do not introduce a common executor interface until a second runtime is actually required.
 
@@ -160,9 +162,9 @@ Raw runs remain ignored. Update `docs/skill-evaluations.md` in the implementatio
 
 ## Implementation Sequence
 
-### 1. Amp-first capability spike
+### 1. Claude Code-first capability spike
 
-Run a disposable positive and negative synthetic skill case through Amp with isolated settings and skill locations. Record the exact commands, effective skill listings, representative event shapes, permission behavior, and whether invocation is trustworthy. Probe Codex and then Claude Code only if Amp fails a core gate.
+Run a disposable positive and negative synthetic skill case through Claude Code with isolated settings and skill locations, probing it first because it is the first intended product host binding. Record the exact commands, effective skill listings, representative event shapes, permission behavior, and whether invocation is trustworthy. Probe Amp or Codex strictly as internal eval infrastructure only if Claude Code fails a core gate and Amp and the human direct it.
 
 **Complete when:** one runtime passes every core gate and its unsupported telemetry is explicit, or implementation stops because no available runtime can produce a valid comparison.
 
@@ -186,8 +188,8 @@ Run at least the positive creation case and negative naming control through both
 
 ## Risks and Stop Conditions
 
-- **Amp cannot isolate global state:** do not weaken the baseline; record the failed gate and probe the next runtime.
-- **Invocation is not observable:** do not accept self-report as evidence. Probe another runtime or leave invocation ungradable if outcome-only evidence is still useful and clearly scoped.
+- **Claude Code cannot isolate global state:** do not weaken the baseline; record the failed gate and return the decision to Amp and the human before probing the next runtime strictly as internal eval infrastructure.
+- **Invocation is not observable:** do not accept self-report as evidence. An invocation-observability failure is a failed qualification gate: record it and return the decision to Amp and the human before probing another host strictly as internal eval infrastructure. If the human explicitly approves an outcome-only run, it may produce scoped outcome evidence, but it remains unqualified for invocation evaluation and must not be represented as passing the executor qualification gate.
 - **Eval leakage:** fail before execution if the runtime payload or agent workspace contains eval definitions, graders, expected outcomes, or benchmarks.
 - **Instruction leakage:** fail the comparison when effective instruction or skill sources cannot be enumerated or suppressed sufficiently to prove the treatment.
 - **Skill resource paths break after installation:** preserve shared deterministic dependencies in both workspaces or make the skill reference portable before continuing.

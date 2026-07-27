@@ -116,6 +116,20 @@ Keep model, tools, permissions, input files, and starting repository state equiv
 
 Use blind comparison for qualitative judgments when practical so the grader does not know which output came from which configuration.
 
+## Host and harness scoping
+
+An eval result is a claim about behavior under a specific execution context. Scope every eval claim to the recorded host and harness that produced it:
+
+- host and harness;
+- host and harness versions;
+- model (and mode if relevant);
+- tools and permissions;
+- configuration and effective instructions;
+- skill revision;
+- date.
+
+Host-specific raw traces are acceptable as evidence. Generated summaries and benchmarks retain D7Y's canonical result semantics, but a summary's portability claim cannot exceed what the underlying host evidence supports. One-host evidence does not prove cross-host portability, and a passing eval on one host does not establish first-class D7Y runtime support on that host. State the host and harness with each reported result; never generalize a one-host eval into a host-neutral or multi-host claim.
+
 ## Benchmark and maturity
 
 Aggregate results by configuration and dimension. At minimum, record:
@@ -126,7 +140,7 @@ Aggregate results by configuration and dimension. At minimum, record:
 - duration and token usage when available;
 - the delta against baseline;
 - unresolved human feedback;
-- model, harness, permissions, date, and skill revision.
+- model, host and harness with versions, tools and permissions, configuration and effective instructions, date, and skill revision.
 
 Skill maturity means:
 

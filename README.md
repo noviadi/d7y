@@ -19,6 +19,12 @@ D7Y is designed around a thin harness, substantial Markdown skills, and determin
 
 Start with the [workbench charter](./docs/discovery-workbench.md) and [agent-native principles](./docs/discovery-workbench-principles.md).
 
+## Runtime direction
+
+D7Y's required behavior is **host-neutral**: skill behavior, initiative and artifact semantics, evidence standards, checkpoints, and deterministic capability contracts are owned by canon, independent of the agent host that runs them. A host **binding** provides the concrete realization—skill loading, instruction discovery, invocation routing, model/tool/permission mapping, command access, and trace capture.
+
+Host-neutral means equivalent required behavior, not identical commands, paths, or configuration. **Claude Code is the first planned binding and the first binding to be evaluated.** No binding evaluation has occurred yet; it is not a fully supported end-user runtime, and a binding earns first-class status only when representative evidence covers installation, invocation, required tools and permissions, produced artifacts and provenance, and known limitations.
+
 ## Status
 
 > **Work in progress:** D7Y is in its foundational development stage. Its skills remain provisional until comparative agent evals demonstrate value over a baseline, and its structure and interfaces may change as the workbench is exercised and refined.

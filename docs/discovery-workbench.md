@@ -299,6 +299,32 @@ The goal is not a large skill library. It is a compounding set of trusted discov
 
 Every skill must carry a small colocated eval suite and earn maturity through isolated comparative runs. Evals cover invocation, process, outcome, quality, and efficiency; they use deterministic evidence where possible and structured judgment where necessary. The organization and maturity contract lives in [Skill Evaluations](./skill-evaluations.md).
 
+## Host-Neutral Core and Host Bindings
+
+D7Y separates what the workbench **requires** from how a particular agent host **provides** it.
+
+**Host-neutral core** is the required behavior, owned by canon regardless of host:
+
+- skill behavior;
+- initiative and artifact semantics;
+- evidence standards and checkpoints;
+- deterministic capability contracts;
+- canonical evaluation semantics.
+
+**Host binding** is the concrete realization on one host:
+
+- skill installation and loading;
+- instruction discovery;
+- invocation and routing;
+- model, tool, and permission mapping;
+- deterministic command access;
+- trace and provenance capture;
+- supported host versions and documented limitations.
+
+Host-neutral means **equivalent required behavior**, not identical commands, paths, configuration, or event formats. Two bindings satisfy the same core if a required behavior holds on each, even when the mechanics differ.
+
+Claude Code is the first **planned** binding and the first binding to be evaluated. No binding evaluation or capability spike has occurred yet. It is not a fully supported end-user runtime. A binding earns first-class status only when representative evidence covers installation, invocation, required tools and permissions, produced artifacts and provenance, and known limitations. Evidence from one host scopes a claim to that host; it does not by itself prove cross-host portability or complete first-class support.
+
 ## Context and Retrieval
 
 The user should not need to supply all relevant context in every prompt.
