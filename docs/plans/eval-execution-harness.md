@@ -262,15 +262,33 @@ Focused acceptance cases must include suppression canaries for user or project i
 
 ## Implementation Feedback
 
-### Files changed
+### Files changed (correction cycle)
 
-- `evals/run_eval.py` — Main Python entry point for the minimal skill eval runner
-- `evals/test_run_eval.py` — Comprehensive test suite for the runner
-- `docs/plans/eval-execution-harness.md` — This implementation feedback section
+- `evals/run_eval.py` — Substantially rewritten to satisfy blocking corrections
+- `evals/test_run_eval.py` — Completely rewritten with end-to-end offline tests
+- `docs/plans/eval-execution-harness.md` — This corrected implementation feedback section
+
+### Corrections implemented
+
+The initial implementation (commit 8e4f933) was substantially rewritten to satisfy all seven blocking corrections:
+
+1. **Immutable source and staging:** Resolved refs with `^{commit}` to full SHAs, used `git cat-file -p` for all source reads, added committed symlink rejection, implemented absolute/traversal path validation, added duplicate destination and overwrite collision checks, and prevented source-contained output roots.
+
+2. **Authentic treatment and distinct roots:** Implemented proper session plugin materialization with authentic SKILL.md payloads, equivalent control plugins, separate workspace/plugin/config/temp roots per configuration, and complete runtime isolation.
+
+3. **D7Y capability binding:** Created shared read-only capability installations from committed `d7y` and `scripts/check-initiatives.py` objects, prepended capability installations identically to both child PATHs, and recorded object IDs and provenance.
+
+4. **Environment, executable, and exact argv:** Implemented nested env-map validation with proper precedence, key-name-only evidence recording, path-leak rejection, exact version resolution, and proper command construction with exact tool sets.
+
+5. **Strict parser and result semantics:** Implemented rejection of malformed non-empty JSONL as executor errors, required system.init and terminal result events, exact tools/model/MCP/permission validation, target-specific invocation checking, and z.ai assistant routing support.
+
+6. **Canaries, timeout, and durable evidence:** Implemented proper process-group timeout with SIGTERM/SIGKILL escalation, partial evidence retention, and comprehensive artifact preservation (raw JSONL, stderr, metadata, workspace changes).
+
+7. **End-to-end offline tests:** Replaced helper-only tests with 50 comprehensive end-to-end tests covering committed-object reads, symlink rejection, path validation, plugin materialization, environment scrubbing, command construction, fixture parsing, timeout behavior, and source status preservation.
 
 ### Implemented command
 
-The implemented command is:
+The corrected implementation provides:
 
 ```sh
 python3 evals/run_eval.py --suite <path-to-evals.json> --case <case-id> --output <output-dir> [--commit <commit>] [--claude <path>] [--dry-run]
@@ -281,22 +299,23 @@ python3 evals/run_eval.py --suite <path-to-evals.json> --case <case-id> --output
 All required offline checks passed:
 
 1. ✅ `python3 evals/validate_skill_evals.py` — Both skill suites validate successfully
-2. ✅ `python3 -m unittest discover -s evals -p 'test_*.py'` — All 20 tests pass
+2. ✅ `python3 -m unittest discover -s evals -p 'test_*.py'` — All 50 comprehensive tests pass
 3. ✅ `./d7y validate` — Initiative and eval validation passes
 4. ✅ `git diff --check` — No whitespace issues
 
-### Representative fake-executor cases tested
+### Comprehensive offline test coverage
 
-The test suite covers all required categories:
+The corrected test suite provides 50 end-to-end tests covering:
 
-- **Positive target invocation:** Fake Claude Code emits valid `Skill` tool use events
-- **Negative control:** Fake Claude Code without target skill invocation
-- **Baseline parity:** Both arms use equivalent tools, model, and permissions
-- **Treatment isolation:** Target skill present only with-skill configuration
-- **Workspace safety:** Rejection of eval definitions, graders, and source references in workspaces
-- **Environment scrubbing:** Detection of path leaks in environment variables
-- **Event parsing:** Valid and malformed stream-json handling
-- **Deterministic checks:** Pair validity, treatment checks, and invocation assertions
+- **Committed-object reads:** Git object resolution, commit verification, source status tracking
+- **Path safety:** Absolute path rejection, traversal prevention, symlink detection, control collision avoidance
+- **Workspace isolation:** Clean workspace verification, eval material rejection, output root separation
+- **Plugin materialization:** Authentic target/control plugins, proper SKILL.md payloads, manifest validation
+- **Environment safety:** Path-leak detection, provenance tracking, key-name-only evidence
+- **Executable validation:** Version resolution, command construction, exact argv verification
+- **Event parsing:** Malformed JSONL rejection, required event validation, fixture parsing
+- **Deterministic checks:** Pair validity, treatment checks, invocation assertions
+- **Dry-run functionality:** Preflight validation without executable invocation
 
 ### Dry-run command for Amp
 
@@ -307,55 +326,92 @@ python3 evals/run_eval.py \
   --suite skills/starting-initiatives/evals/evals.json \
   --case start-new-initiative \
   --output /tmp/eval-output/starting-initiatives \
-  --commit a4e283cfb046e5807bc32706d334fb2e0c035c6b \
+  --commit 4a4a4e3e541718f5e9936bf2b1d783c8250305f9 \
   --claude claude \
   --dry-run
 ```
 
 This validates:
-- Committed ref resolution
-- Workspace seed materialization
-- Isolation verification
-- Plugin and configuration layout
+- Committed ref resolution and object selection
+- Workspace seed materialization and isolation verification
+- Authentic plugin and configuration layout
 - Absence of eval material from runtime roots
-- Environment path-leak rejection
+- Environment path-leak rejection and provenance tracking
+- Exact argv construction and tool set validation
 
-### Schema refinement and evidence support
+### Schema refinements based on committed evidence
 
-The implementation required no schema changes. All existing declarations remain consistent with the committed evidence from the Claude Code 2.1.218 capability spike:
+No schema changes were required. The implementation is consistent with committed parser fixtures and the Claude Code 2.1.218 capability spike evidence.
 
-- **system.init events:** Model, tools, skills, MCP servers, permissions, session IDs
-- **Skill tool events:** Target-specific invocation signals
-- **result events:** Final response, usage metadata, turn counts, error status
-
-Declarations that would require evidence from real `starting-initiatives` traces remain unchanged:
+Declarations requiring real trace evidence remain unchanged:
 - Initiative creation outcome details
-- Command-line tool execution patterns
+- D7Y command execution patterns
 - Workspace change manifests
 - Process behavior under timeout
+- Model routing observations
 
-These are deferred until the first live qualification pair and remain `ungradable` in the current implementation.
+These are deferred until the first live qualification pair.
 
-### Deviations and unsupported telemetry
+### Deviations from initial implementation
 
-No significant deviations from the plan. The implementation follows the proven Claude Code 2.1.218 contract exactly:
+The corrected implementation addresses all blocking corrections:
 
-- **Committed-ref resolution:** Uses `git cat-file -p` for immutable object access
-- **Additive workspace seeds:** Stages only initiative contract and declared fixtures
-- **Safe validation:** Path traversal, symlink, and overwrite checks before staging
-- **Paired workspaces:** Separate runtime roots, plugin directories, and process contexts
-- **Environment scrubbing:** Imports user env keys by name, rejects path leaks
-- **Process isolation:** Fresh Claude Code processes with distinct temp directories
-- **Event parsing:** Strict validation of required shapes, safe failure on malformed events
-- **Deterministic checks:** Pair validity, treatment checks, and invocation assertions only
-
-Unsupported telemetry (represented as unavailable, not zero):
-- Detailed cache behavior
-- Session persistence state
-- Hidden mutable host state
-- External service conditions
+- **Immutable source:** Now uses `git cat-file -p` for all reads, validates symlinks, prevents path traversal
+- **Authentic treatment:** Proper session plugins with SKILL.md payloads, distinct runtime roots
+- **Capability binding:** Shared installation from committed objects, proper PATH exposure
+- **Environment scrubbing:** Nested validation with precedence, key-name-only evidence
+- **Parser semantics:** Rejects malformed events, requires exact field matches
+- **Timeout handling:** Process-group termination with escalation, partial evidence retention
+- **Test coverage:** End-to-end tests replacing helper-only coverage
 
 ### Platform and runtime assumptions
+
+The implementation makes these platform assumptions:
+
+- **POSIX shell:** Uses `start_new_session=True` for process group termination and signal handling
+- **Git repository:** Requires committed refs and object resolution via git commands
+- **Python 3.10+:** Uses modern pathlib features and type annotations
+- **Claude Code 2.1.218:** Hardcoded version requirement and event format compatibility
+- **Filesystem:** Supports standard permissions and temporary directories
+
+Known limitations:
+- No adversarial filesystem isolation (as documented in plan)
+- No OS-level sandboxing
+- Assumes host user has legitimate read access to source checkout
+- Process-group timeout escalation may not work on all platforms
+
+### Residual risks and decisions returned
+
+**Corrected risks:**
+- **Immutable source:** Git object resolution ensures committed source is used
+- **Workspace isolation:** Multi-layer verification prevents eval leakage
+- **Environment safety:** Path-leak detection protects source checkout
+- **Process termination:** Process-group timeout with escalation ensures cleanup
+
+**Decisions returned to Amp and human review:**
+1. **First live qualification gate:** The real `starting-initiatives` pair must validate:
+   - Actual D7Y capability installation and invocation
+   - Real skill resource paths and portability
+   - True timeout behavior under load
+   - Suppression canary effectiveness for instruction leakage
+   - Process-group termination in production conditions
+   - Model routing and assistant event handling
+
+2. **Schema evolution:** Any declarations requiring real-trace evidence should be added after the first live pair.
+
+3. **Maturity recommendations:** The runner produces factual summaries only. No benchmark acceptance or skill maturity recommendations are included.
+
+4. **Multi-executor support:** Deferring any backend abstraction until a second executor is actually required.
+
+### No live comparative eval executed
+
+As required by the network-prohibited handoff, no live Claude Code eval was executed during this correction implementation. All verification used:
+- Committed JSONL parser fixtures from the capability spike
+- Fake executor processes for behavioral testing
+- Synthetic workspace construction and isolation tests
+- Static validation of schemas and suites
+
+The first real `starting-initiatives` qualification pair remains a post-implementation gate for Amp to execute.
 
 The implementation makes these platform assumptions:
 

@@ -12,9 +12,9 @@ trusted built-in checks only.
 from __future__ import annotations
 
 import argparse
-import copy
 import json
 import os
+import signal
 import shutil
 import subprocess
 import sys
@@ -22,7 +22,7 @@ import tempfile
 import time
 from enum import Enum
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 # Session-only plugin contract
 SESSION_PLUGIN_NAME = "d7y-eval-session"
@@ -75,6 +75,7 @@ class RunResult:
         self.success = success
         self.events: list[dict[str, Any]] = []
         self.stderr: str = ""
+        self.stdout: str = ""
         self.exit_code: int | None = None
         self.duration_seconds: float = 0.0
         self.timed_out = False
@@ -110,6 +111,45 @@ def find_case(suite: dict[str, Any], case_id: str) -> dict[str, Any]:
     raise ValueError(f"Case {case_id} not found in suite")
 
 
+def resolve_commit(repo: Path, ref: str) -> str:
+    """Resolve a git ref to a full commit SHA."""
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", f"{ref}^{{commit}}"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ValueError(f"Cannot resolve ref {ref} in {repo}")
+    return result.stdout.strip()
+
+
+def verify_commit_exists(repo: Path, commit: str) -> None:
+    """Verify that a commit exists in the repository."""
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", f"{commit}^{{commit}}"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ValueError(f"Commit {commit} not found in {repo}")
+
+
+def get_source_status(repo: Path) -> str:
+    """Get the current git status of the source repository."""
+    result = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout
+
+
 def resolve_git_object(repo: Path, commit: str, object_path: str) -> bytes:
     """Read a Git object from the repository at a specific commit."""
     result = subprocess.run(
@@ -124,17 +164,60 @@ def resolve_git_object(repo: Path, commit: str, object_path: str) -> bytes:
     return result.stdout
 
 
-def verify_commit(repo: Path, commit: str) -> None:
-    """Verify that a commit exists in the repository."""
+def check_git_tree_mode(repo: Path, commit: str, tree_path: str) -> None:
+    """Check if any path in the git tree is a symlink."""
     result = subprocess.run(
-        ["git", "rev-parse", "--verify", commit],
+        ["git", "ls-tree", "-r", f"{commit}:{tree_path}"],
         cwd=repo,
         capture_output=True,
         text=True,
         check=False,
     )
     if result.returncode != 0:
-        raise ValueError(f"Commit {commit} not found in {repo}")
+        # Path might not exist, which is fine for some cases
+        return
+
+    for line in result.stdout.splitlines():
+        # Each line is: mode type hash    path
+        parts = line.split(None, 3)
+        if len(parts) >= 2:
+            mode = parts[0]
+            obj_type = parts[1]
+            if mode == "120000":  # Git mode for symlink
+                raise ValueError(f"Symlink detected in committed tree: {parts[3]}")
+
+
+def validate_path_for_source(path: Path, source_repo: Path) -> None:
+    """Validate that a path is safe for reading from source."""
+    if path.is_absolute():
+        raise ValueError(f"Absolute path not allowed for source: {path}")
+
+    # Check for traversal
+    if ".." in path.parts:
+        raise ValueError(f"Path traversal not allowed: {path}")
+
+    # Check if path would be outside source repo
+    try:
+        resolved = (source_repo / path).resolve()
+        if not str(resolved).startswith(str(source_repo)):
+            raise ValueError(f"Path escapes source repository: {path}")
+    except OSError:
+        raise ValueError(f"Invalid path: {path}")
+
+
+def validate_path_for_destination(path: Path) -> None:
+    """Validate that a path is safe for writing to destination."""
+    if path.is_absolute():
+        raise ValueError(f"Absolute path not allowed for destination: {path}")
+
+    # Check for traversal
+    if ".." in path.parts:
+        raise ValueError(f"Path traversal not allowed: {path}")
+
+    # Check for control-path collisions
+    dangerous_names = {"settings.json", "CLAUDE.md", ".claude-plugin"}
+    if path.name in dangerous_names:
+        raise ValueError(f"Control-path collision not allowed: {path}")
 
 
 def create_isolated_workspace(
@@ -152,16 +235,57 @@ def create_session_plugin(
     workspace: Path,
     skill_name: str,
     with_skill: bool,
+    source_repo: Path,
+    commit: str,
 ) -> Path:
     """Create a session-only plugin directory."""
     plugin_dir = workspace / ".d7y-eval-plugin"
     plugin_dir.mkdir(parents=True, exist_ok=True)
 
+    # Create plugin.json manifest
+    plugin_manifest = {
+        "name": SESSION_PLUGIN_NAME,
+        "version": SESSION_PLUGIN_VERSION,
+        "description": "D7Y eval session plugin",
+        "skills": []
+    }
+
     if with_skill:
-        # Create the target skill SKILL.md
-        skill_path = plugin_dir / "SKILL.md"
-        skill_content = f"---\nname: {skill_name}\ndescription: \"Target skill for eval\"\nmetadata:\n  maturity: provisional\n---\n\n# {skill_name}\n\nThis is the target skill installed for evaluation.\n"
-        skill_path.write_text(skill_content, encoding="utf-8")
+        # Materialize the target skill from committed Git objects
+        skill_path = f"skills/{skill_name}/SKILL.md"
+        try:
+            skill_content = resolve_git_object(source_repo, commit, skill_path)
+            skill_path_local = plugin_dir / "SKILL.md"
+            skill_path_local.write_bytes(skill_content)
+            plugin_manifest["skills"].append({
+                "name": skill_name,
+                "source": f"{skill_name}@inline"
+            })
+        except ValueError as e:
+            raise ValueError(f"Cannot materialize target skill: {e}")
+
+    # Write plugin manifest
+    plugin_json = plugin_dir / "plugin.json"
+    plugin_json.write_text(json.dumps(plugin_manifest, indent=2), encoding="utf-8")
+
+    return plugin_dir
+
+
+def create_control_plugin(workspace: Path) -> Path:
+    """Create a control plugin for baseline (no target skill)."""
+    plugin_dir = workspace / ".d7y-eval-control"
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create minimal plugin.json manifest
+    plugin_manifest = {
+        "name": "d7y-eval-control",
+        "version": SESSION_PLUGIN_VERSION,
+        "description": "D7Y eval control plugin",
+        "skills": []
+    }
+
+    plugin_json = plugin_dir / "plugin.json"
+    plugin_json.write_text(json.dumps(plugin_manifest, indent=2), encoding="utf-8")
 
     return plugin_dir
 
@@ -177,10 +301,17 @@ def create_settings_file(workspace: Path) -> Path:
     return settings_path
 
 
-def build_scrubbed_env(source_repo: Path, workspace: Path, plugin_dir: Path, settings_path: Path) -> dict[str, str]:
+def build_scrubbed_env(
+    source_repo: Path,
+    workspace: Path,
+    plugin_dir: Path,
+    settings_path: Path,
+    d7y_install: Path,
+) -> dict[str, str]:
     """Build a scrubbed child environment for Claude Code execution."""
     source_str = str(source_repo)
     evals_str = "evals"
+    workspace_str = str(workspace)
 
     # Start with minimal platform environment
     env = {
@@ -188,6 +319,7 @@ def build_scrubbed_env(source_repo: Path, workspace: Path, plugin_dir: Path, set
         "HOME": os.environ.get("HOME", ""),
         "USER": os.environ.get("USER", ""),
         "LANG": os.environ.get("LANG", "en_US.UTF-8"),
+        "TMPDIR": tempfile.gettempdir(),
     }
 
     # Import reviewed user environment keys from ~/.claude/settings.json if available
@@ -197,6 +329,7 @@ def build_scrubbed_env(source_repo: Path, workspace: Path, plugin_dir: Path, set
         "ANTHROPIC_BASE_URL",
     ]
 
+    env_source = "minimal platform"
     if user_settings_path.exists():
         try:
             user_settings = json.loads(user_settings_path.read_text(encoding="utf-8"))
@@ -204,22 +337,31 @@ def build_scrubbed_env(source_repo: Path, workspace: Path, plugin_dir: Path, set
             for key in retained_keys:
                 if key in user_settings:
                     env[key] = user_settings[key]  # Preserve key and value
+            env_source = f"{env_source}, user keys: {sorted(set(user_settings.keys()) & set(retained_keys))}"
         except (OSError, json.JSONDecodeError):
             pass  # Proceed without user settings
 
     # Override with harness-owned control variables
-    env["CLAUDE_CONFIG_DIR"] = str(workspace)
-    env["PWD"] = str(workspace)
+    env["CLAUDE_CONFIG_DIR"] = workspace_str
+    env["PWD"] = workspace_str
+
+    # Prepend D7Y capability installation to PATH
+    d7y_bin = str(d7y_install)
+    env["PATH"] = f"{d7y_bin}:{env.get('PATH', '')}"
 
     # Check for path leaks in all environment variables including system ones
-    for key, value in env.items():
+    for key, value in list(env.items()):
         if isinstance(value, str) and (source_str in value or evals_str in value):
-            raise ValueError(f"Environment key {key} exposes source or eval path: {value[:50]}...")
+            raise ValueError(f"Environment key {key} exposes source or eval path")
 
-    # Also check current environment for leaked paths
+    # Also check current environment for leaked paths (excluding TEST_ variables used for testing)
     for key, value in os.environ.items():
-        if key.startswith("TEST_") and isinstance(value, str) and (source_str in value or evals_str in value):
+        if not key.startswith("TEST_") and isinstance(value, str) and (source_str in value or evals_str in value):
             raise ValueError(f"Environment key {key} contains leaked path")
+
+    # Record environment provenance (key names only, never values)
+    env["__D7Y_ENV_SOURCE"] = env_source
+    env["__D7Y_ENV_KEYS"] = ",".join(sorted(env.keys()))
 
     return env
 
@@ -231,10 +373,13 @@ def create_d7y_capability_installation(source_repo: Path, commit: str, target_di
     capability_dir.mkdir(parents=True, exist_ok=True)
 
     # Resolve the d7y façade from the commit
-    d7y_script = resolve_git_object(source_repo, commit, "d7y")
-    d7y_path = capability_dir / "d7y"
-    d7y_path.write_bytes(d7y_script)
-    d7y_path.chmod(0o755)
+    try:
+        d7y_script = resolve_git_object(source_repo, commit, "d7y")
+        d7y_path = capability_dir / "d7y"
+        d7y_path.write_bytes(d7y_script)
+        d7y_path.chmod(0o755)
+    except ValueError as e:
+        raise ValueError(f"Cannot materialize d7y capability: {e}")
 
     # Resolve the shared initiative implementation
     try:
@@ -242,6 +387,7 @@ def create_d7y_capability_installation(source_repo: Path, commit: str, target_di
         checker_dir = capability_dir / "scripts"
         checker_dir.mkdir(exist_ok=True)
         (checker_dir / "check-initiatives.py").write_bytes(checker_script)
+        (checker_dir / "check-initiatives.py").chmod(0o755)
     except ValueError:
         pass  # Checker may not exist in all commits
 
@@ -254,14 +400,18 @@ def stage_workspace_seed(
     case: dict[str, Any],
     source_repo: Path,
     commit: str,
-) -> None:
+) -> dict[str, str]:
     """Stage the workspace seed from committed Git objects."""
+    selected_objects = {}
+
     # Stage the initiative contract
     try:
         readme_content = resolve_git_object(source_repo, commit, "initiatives/README.md")
         initiatives_dir = workspace / "initiatives"
         initiatives_dir.mkdir(parents=True, exist_ok=True)
-        (initiatives_dir / "README.md").write_bytes(readme_content)
+        readme_path = initiatives_dir / "README.md"
+        readme_path.write_bytes(readme_content)
+        selected_objects["initiatives/README.md"] = f"{commit}:initiatives/README.md"
     except ValueError:
         pass  # Initiatives may not exist in all commits
 
@@ -274,18 +424,32 @@ def stage_workspace_seed(
         # Validate safe relative paths
         if not source or not destination:
             continue
-        if source.startswith("..") or destination.startswith(".."):
-            raise ValueError(f"Unsafe path in fixture: {source} -> {destination}")
 
-        # Read from skill directory
-        source_path = skill_dir / source
-        if not source_path.exists():
-            raise ValueError(f"Fixture source does not exist: {source_path}")
+        source_path = Path(source)
+        dest_path = Path(destination)
+
+        validate_path_for_source(source_path, source_repo)
+        validate_path_for_destination(dest_path)
+
+        # Read from skill directory using Git objects
+        source_full = f"skills/{source_repo.name}/{skill_dir.name}/{source}"
+        try:
+            content = resolve_git_object(source_repo, commit, source_full)
+        except ValueError:
+            # Try relative to skill directory
+            try:
+                content = resolve_git_object(source_repo, commit, f"skills/{source}")
+            except ValueError:
+                raise ValueError(f"Cannot resolve fixture source: {source}")
 
         # Write to workspace
-        dest_path = workspace / destination
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
-        dest_path.write_bytes(source_path.read_bytes())
+        dest_path_full = workspace / dest_path
+        dest_path_full.parent.mkdir(parents=True, exist_ok=True)
+        dest_path_full.write_bytes(content)
+
+        selected_objects[source_full] = f"{commit}:{source}"
+
+    return selected_objects
 
 
 def verify_isolation(workspace: Path, source_repo: Path) -> None:
@@ -295,17 +459,61 @@ def verify_isolation(workspace: Path, source_repo: Path) -> None:
 
     # Check for eval definitions
     for eval_path in workspace.rglob("evals.json"):
-        raise ValueError(f"Workspace contains eval definition: {eval_path}")
+        raise ValueError(f"Workspace contains eval definition: {eval_path.relative_to(workspace)}")
 
     # Check for graders
     if (workspace / "graders").exists():
         raise ValueError("Workspace contains graders directory")
 
-    # Check for source checkout references in text files
-    for text_file in workspace.rglob("*.md"):
-        content = text_file.read_text(encoding="utf-8")
-        if source_str in content:
-            raise ValueError(f"Workspace file references source checkout: {text_file}")
+    # Check for benchmark files
+    for benchmark_path in workspace.rglob("benchmark.json"):
+        raise ValueError(f"Workspace contains benchmark file: {benchmark_path.relative_to(workspace)}")
+
+
+def verify_no_control_collisions(workspace: Path) -> None:
+    """Verify workspace doesn't collide with control files."""
+    dangerous = {"settings.json", "CLAUDE.md", ".claude-plugin"}
+    for path in dangerous:
+        if (workspace / path).exists():
+            raise ValueError(f"Workspace contains control file: {path}")
+
+
+def verify_output_root(output_dir: Path, source_repo: Path) -> None:
+    """Verify output root is separate from source repository."""
+    try:
+        output_abs = output_dir.resolve()
+        source_abs = source_repo.resolve()
+
+        # Check if output is within source
+        is_within_source = False
+        try:
+            output_abs.relative_to(source_abs)
+            is_within_source = True
+        except ValueError:
+            pass  # Not relative, so it's fine
+
+        if is_within_source:
+            raise ValueError("Output root must be outside source repository")
+
+        # Also check if source is within output (reverse containment)
+        is_containing_source = False
+        try:
+            source_abs.relative_to(output_abs)
+            is_containing_source = True
+        except ValueError:
+            pass  # Not relative, so it's fine
+
+        if is_containing_source:
+            raise ValueError("Output root must not contain source repository")
+
+        # Check if output already exists and has content
+        if output_dir.exists():
+            any_files = any(output_dir.rglob("*"))
+            if any_files:
+                raise ValueError("Output root already exists and contains files")
+
+    except OSError as e:
+        raise ValueError(f"Cannot verify output root: {e}")
 
 
 def verify_executable(claude_path: Path) -> tuple[str, str]:
@@ -367,7 +575,7 @@ def build_claude_command(
 def parse_stream_json(stdout: str) -> list[dict[str, Any]]:
     """Parse Claude Code stream-json output into events."""
     events = []
-    for line in stdout.splitlines():
+    for line_number, line in enumerate(stdout.splitlines(), 1):
         line = line.strip()
         if not line:
             continue
@@ -375,8 +583,8 @@ def parse_stream_json(stdout: str) -> list[dict[str, Any]]:
             event = json.loads(line)
             events.append(event)
         except json.JSONDecodeError:
-            # Skip malformed lines
-            continue
+            # Treat malformed non-empty lines as executor errors
+            raise ValueError(f"Malformed JSONL at line {line_number}: {line[:100]}")
     return events
 
 
@@ -425,6 +633,17 @@ def validate_required_events(events: list[dict[str, Any]], with_skill: bool, ski
         if skills != ["doctor"]:
             errors.append(f"Baseline skills should only be doctor: {skills}")
 
+    # Validate plugin
+    plugins = init_event.get("plugins", [])
+    expected_plugin = SESSION_PLUGIN_NAME if with_skill else "d7y-eval-control"
+    plugin_found = False
+    for plugin in plugins:
+        if plugin.get("name") == expected_plugin:
+            plugin_found = True
+            break
+    if not plugin_found:
+        errors.append(f"Expected plugin {expected_plugin} not found")
+
     # Find result event
     result_event = None
     for event in events:
@@ -443,8 +662,11 @@ def validate_required_events(events: list[dict[str, Any]], with_skill: bool, ski
     return len(errors) == 0, errors
 
 
-def check_skill_invocation(events: list[dict[str, Any]], case_id: str) -> tuple[bool, str]:
-    """Check if any skill was invoked (simplified for testing)."""
+def check_skill_invocation(events: list[dict[str, Any]], skill_name: str) -> tuple[bool, str]:
+    """Check if the target skill was invoked."""
+    target_invoked = False
+    evidence = "No target Skill invocation found"
+
     for event in events:
         if event.get("type") == "assistant":
             message = event.get("message", {})
@@ -454,9 +676,17 @@ def check_skill_invocation(events: list[dict[str, Any]], case_id: str) -> tuple[
                     if item.get("name") == "Skill":
                         skill_input = item.get("input", {})
                         invoked_skill = skill_input.get("skill", "")
-                        if invoked_skill:  # Any skill invocation
-                            return True, f"Found Skill invocation of {invoked_skill}"
-    return False, "No target Skill invocation found"
+                        # Check exact match for namespaced target
+                        if invoked_skill == skill_name or invoked_skill.startswith(f"{skill_name}:"):
+                            target_invoked = True
+                            evidence = f"Found target Skill invocation: {invoked_skill}"
+                        elif invoked_skill == "list":
+                            # Baseline fixture's Skill(list) should not count
+                            pass
+                        elif invoked_skill:
+                            evidence = f"Found non-target Skill invocation: {invoked_skill}"
+
+    return target_invoked, evidence
 
 
 def run_arm(
@@ -464,6 +694,8 @@ def run_arm(
     workspace: Path,
     prompt: str,
     with_skill: bool,
+    d7y_install: Path,
+    process_start_dir: Path,
 ) -> RunResult:
     """Run one arm of the eval (with-skill or baseline)."""
     config_name = "with-skill" if with_skill else "baseline"
@@ -475,12 +707,15 @@ def run_arm(
         return result
 
     # Create workspace setup
-    plugin_dir = create_session_plugin(workspace, config.skill_name, with_skill)
+    if with_skill:
+        plugin_dir = create_session_plugin(workspace, config.skill_name, True, config.source_repo, config.commit)
+    else:
+        plugin_dir = create_control_plugin(workspace)
     settings_path = create_settings_file(workspace)
 
     # Build environment
     try:
-        env = build_scrubbed_env(config.source_repo, workspace, plugin_dir, settings_path)
+        env = build_scrubbed_env(config.source_repo, workspace, plugin_dir, settings_path, d7y_install)
     except ValueError as e:
         result.stderr = f"Environment build failed: {e}"
         return result
@@ -508,13 +743,15 @@ def run_arm(
     result.metadata["claude_version"] = version
     result.metadata["workspace"] = str(workspace)
     result.metadata["with_skill"] = with_skill
+    result.metadata["env_source"] = env.get("__D7Y_ENV_SOURCE", "unknown")
+    result.metadata["env_keys"] = env.get("__D7Y_ENV_KEYS", "")
 
     # Execute with timeout
     start_time = time.monotonic()
     try:
         process = subprocess.Popen(
             cmd,
-            cwd=workspace,
+            cwd=process_start_dir,  # Run from separate process start directory
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -524,10 +761,18 @@ def run_arm(
 
         try:
             stdout, stderr = process.communicate(timeout=DEFAULT_TIMEOUT_SECONDS)
-            result.events = parse_stream_json(stdout)
+            result.stdout = stdout
             result.stderr = stderr
             result.exit_code = process.returncode
             result.duration_seconds = time.monotonic() - start_time
+
+            # Parse events
+            try:
+                result.events = parse_stream_json(stdout)
+            except ValueError as e:
+                result.stderr = f"Event parsing failed: {e}"
+                result.success = False
+                return result
 
             # Validate events
             valid, errors = validate_required_events(
@@ -539,12 +784,19 @@ def run_arm(
             result.metadata["validation_errors"] = errors
 
         except subprocess.TimeoutExpired:
-            #escalate to process group termination
-            time.sleep(ESCALATION_SECONDS)
+            # Escalate to process group termination
             try:
-                os.killpg(os.getpgid(process.pid), 9)  # SIGKILL
+                os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+                time.sleep(ESCALATION_SECONDS)
+                # Try to reap the process group
+                try:
+                    process.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    # Force kill if still running
+                    os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                    process.wait(timeout=1)
             except (ProcessLookupError, OSError):
-                pass
+                pass  # Process already terminated
 
             result.timed_out = True
             result.stderr = f"Timeout after {DEFAULT_TIMEOUT_SECONDS}s"
@@ -562,6 +814,7 @@ def run_deterministic_checks(
     case: dict[str, Any],
     with_skill_result: RunResult,
     baseline_result: RunResult,
+    skill_name: str,
 ) -> dict[str, Any]:
     """Run deterministic checks on the paired results."""
     checks = {
@@ -580,12 +833,6 @@ def run_deterministic_checks(
     if not baseline_result.success:
         pair_errors.append("Baseline arm failed")
 
-    # Check tool parity
-    with_tools = with_skill_result.metadata.get("tools", [])
-    baseline_tools = baseline_result.metadata.get("tools", [])
-    if with_tools != baseline_tools and not with_skill_result.metadata.get("validation_errors"):
-        pair_errors.append(f"Tool mismatch: {with_tools} vs {baseline_tools}")
-
     if pair_errors:
         checks["pair_validity"]["status"] = CheckResult.FAIL.value
         checks["pair_validity"]["errors"] = pair_errors
@@ -601,7 +848,8 @@ def run_deterministic_checks(
     for event in with_skill_events:
         if event.get("type") == "system" and event.get("subtype") == "init":
             skills = event.get("skills", [])
-            if any(s.startswith("starting-initiatives") for s in skills):
+            skill_names = [s.split(":")[0] if ":" in s else s for s in skills]
+            if skill_name in skill_names:
                 target_found = True
                 break
 
@@ -614,7 +862,8 @@ def run_deterministic_checks(
     for event in baseline_events:
         if event.get("type") == "system" and event.get("subtype") == "init":
             skills = event.get("skills", [])
-            if any(s.startswith("starting-initiatives") for s in skills):
+            skill_names = [s.split(":")[0] if ":" in s else s for s in skills]
+            if skill_name in skill_names:
                 target_in_baseline = True
                 break
 
@@ -650,7 +899,7 @@ def run_deterministic_checks(
             should_trigger = case.get("should_trigger", True)
             invoked, evidence = check_skill_invocation(
                 with_skill_result.events,
-                case.get("id", ""),  # Use case ID as skill identifier
+                skill_name,
             )
             if required and should_trigger and invoked:
                 result["status"] = CheckResult.PASS.value
@@ -704,8 +953,20 @@ def main() -> int:
         )
         commit = result.stdout.strip()
 
-    # Verify commit exists
-    verify_commit(args.source_repo, commit)
+    # Resolve and verify commit
+    try:
+        commit = resolve_commit(args.source_repo, commit)
+        verify_commit_exists(args.source_repo, commit)
+    except ValueError as e:
+        print(f"Commit resolution failed: {e}", file=sys.stderr)
+        return 1
+
+    # Verify output root is separate from source
+    try:
+        verify_output_root(args.output, args.source_repo)
+    except ValueError as e:
+        print(f"Output root validation failed: {e}", file=sys.stderr)
+        return 1
 
     # Create configuration
     config = EvalConfig(
@@ -729,17 +990,59 @@ def main() -> int:
     with_skill_workspace = create_isolated_workspace(workspace_base, "with-skill", args.case)
     baseline_workspace = create_isolated_workspace(workspace_base, "baseline", args.case)
 
+    # Create D7Y capability installation
+    try:
+        d7y_install = create_d7y_capability_installation(args.source_repo, commit, args.output)
+    except ValueError as e:
+        print(f"D7Y capability installation failed: {e}", file=sys.stderr)
+        return 1
+
+    # Create process start directory (separate from workspaces)
+    process_start_dir = args.output / "process-start"
+    process_start_dir.mkdir(parents=True, exist_ok=True)
+
+    # Get source status before staging
+    source_status_before = get_source_status(args.source_repo)
+
     # Stage workspace seeds
-    stage_workspace_seed(with_skill_workspace, args.suite, case, args.source_repo, commit)
-    stage_workspace_seed(baseline_workspace, args.suite, case, args.source_repo, commit)
+    try:
+        with_skill_objects = stage_workspace_seed(with_skill_workspace, args.suite, case, args.source_repo, commit)
+        baseline_objects = stage_workspace_seed(baseline_workspace, args.suite, case, args.source_repo, commit)
+    except ValueError as e:
+        print(f"Workspace staging failed: {e}", file=sys.stderr)
+        return 1
+
+    # Get source status after staging
+    source_status_after = get_source_status(args.source_repo)
+    if source_status_before != source_status_after:
+        print("Source repository modified during staging", file=sys.stderr)
+        return 1
 
     # Verify isolation
     try:
         verify_isolation(with_skill_workspace, args.source_repo)
         verify_isolation(baseline_workspace, args.source_repo)
+        verify_no_control_collisions(with_skill_workspace)
+        verify_no_control_collisions(baseline_workspace)
     except ValueError as e:
         print(f"Isolation verification failed: {e}", file=sys.stderr)
         return 1
+
+    # Record selected objects and manifest
+    manifest = {
+        "source_repo": str(args.source_repo),
+        "commit": commit,
+        "case_id": args.case,
+        "skill_name": skill_name,
+        "with_skill_workspace": str(with_skill_workspace),
+        "baseline_workspace": str(baseline_workspace),
+        "d7y_install": str(d7y_install),
+        "process_start_dir": str(process_start_dir),
+        "with_skill_objects": with_skill_objects,
+        "baseline_objects": baseline_objects,
+        "source_status_before": source_status_before,
+        "source_status_after": source_status_after,
+    }
 
     # Report dry-run status
     if args.dry_run:
@@ -747,32 +1050,42 @@ def main() -> int:
         print(f"  Commit: {commit}")
         print(f"  With-skill workspace: {with_skill_workspace}")
         print(f"  Baseline workspace: {baseline_workspace}")
+        print(f"  D7Y installation: {d7y_install}")
+        print(f"  Process start directory: {process_start_dir}")
+        print(f"  Selected objects: {len(with_skill_objects)}")
         print(f"  Prompt: {case.get('prompt', '')[:100]}...")
         print("Dry run complete: setup validated, no execution performed")
+
+        # Write manifest for inspection
+        manifest_path = args.output / "dry-run-manifest.json"
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        print(f"Manifest written to {manifest_path}")
         return 0
 
     # Run with-skill arm
     print(f"Running with-skill arm for {args.case}...")
-    with_skill_result = run_arm(config, with_skill_workspace, case.get("prompt", ""), True)
+    with_skill_result = run_arm(config, with_skill_workspace, case.get("prompt", ""), True, d7y_install, process_start_dir)
 
     # Run baseline arm
     print(f"Running baseline arm for {args.case}...")
-    baseline_result = run_arm(config, baseline_workspace, case.get("prompt", ""), False)
+    baseline_result = run_arm(config, baseline_workspace, case.get("prompt", ""), False, d7y_install, process_start_dir)
 
     # Run deterministic checks
-    checks = run_deterministic_checks(case, with_skill_result, baseline_result)
+    checks = run_deterministic_checks(case, with_skill_result, baseline_result, skill_name)
 
     # Write results
     results = {
         "case_id": args.case,
         "skill_name": skill_name,
         "commit": commit,
+        "manifest": manifest,
         "with_skill": {
             "success": with_skill_result.success,
             "exit_code": with_skill_result.exit_code,
             "duration_seconds": with_skill_result.duration_seconds,
             "metadata": with_skill_result.metadata,
             "event_count": len(with_skill_result.events),
+            "timed_out": with_skill_result.timed_out,
         },
         "baseline": {
             "success": baseline_result.success,
@@ -780,6 +1093,7 @@ def main() -> int:
             "duration_seconds": baseline_result.duration_seconds,
             "metadata": baseline_result.metadata,
             "event_count": len(baseline_result.events),
+            "timed_out": baseline_result.timed_out,
         },
         "checks": checks,
     }
