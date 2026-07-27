@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","session_id":"fixture-baseline-session","tools":["Skill"],"model":"claude-sonnet-5","skills":["doctor"],"plugins":[{"name":"d7y-eval-control","path":"/eval/empty-plugin","source":"d7y-eval-control@inline","version":"0.0.1"}],"mcp_servers":[],"permissionMode":"dontAsk"}
+{"type":"assistant","message":{"role":"assistant","model":"claude-sonnet-5","content":[{"type":"tool_use","id":"fixture-non-target-skill-call","name":"Skill","input":{"skill":"list"}}]}}
+{"type":"assistant","message":{"role":"assistant","model":"claude-sonnet-5","content":[{"type":"text","text":"I could not find an applicable skill."}]}}
+{"type":"result","subtype":"success","result":"I could not find an applicable skill.","is_error":false,"num_turns":2,"permission_denials":[],"modelUsage":{"claude-sonnet-5":{"provider":"firstParty","canonicalModel":"claude-sonnet-5"}}}
