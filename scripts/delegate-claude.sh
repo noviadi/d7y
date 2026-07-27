@@ -19,7 +19,7 @@ readonly DEFAULT_PROFILE="docs-commit"
 readonly NETWORK_POLICY="prohibited"
 readonly MCP_POLICY="strict empty configuration"
 readonly PERSISTENCE_POLICY="disabled"
-readonly SETTINGS_NOTE="project-only via --setting-sources project"
+readonly SETTINGS_NOTE="project settings plus env-only user import"
 
 usage() {
   cat <<'EOF'
@@ -67,9 +67,11 @@ Trust boundary:
 Runtime posture:
   Network is prohibited. MCP is strict-empty
   (--mcp-config '{"mcpServers":{}}' --strict-mcp-config).
-  Sessions are non-persistent (--no-session-persistence). Settings are project-only
-  (--setting-sources project). Output is --verbose --output-format stream-json
-  under --print.
+  Sessions are non-persistent (--no-session-persistence). Claude settings remain
+  project-only (--setting-sources project); only the top-level env object from
+  ~/.claude/settings.json is imported into the Claude subprocess. Environment
+  values are never printed or passed as command arguments. Output is --verbose
+  --output-format stream-json under --print.
 
 Lifecycle authority: none. The launcher reports branch movement, changed paths,
 commits created, and worktree cleanliness after a real run; it never mutates Git
@@ -91,6 +93,129 @@ require_git_clean() {
     out="$(git status --porcelain)" || return 2
   fi
   [[ -z "$out" ]]
+}
+
+inspect_claude_user_env() {
+  local settings_path inspection mode mode_oct
+
+  command -v python3 >/dev/null 2>&1 \
+    || die "python3 is required to import Claude user environment"
+
+  settings_path="$(readlink -f -- "$HOME/.claude/settings.json" 2>/dev/null || true)"
+  [[ -n "$settings_path" && -f "$settings_path" ]] \
+    || die "Claude user settings not found: $HOME/.claude/settings.json"
+
+  if ! inspection="$(python3 - "$settings_path" <<'PY'
+import hashlib
+import json
+import os
+import re
+import stat
+import sys
+
+path = sys.argv[1]
+fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+try:
+    metadata = os.fstat(fd)
+    if not stat.S_ISREG(metadata.st_mode):
+        raise SystemExit("Claude user settings must be a regular file")
+    if metadata.st_uid != os.getuid():
+        raise SystemExit("Claude user settings are not owned by the current user")
+    if stat.S_IMODE(metadata.st_mode) & 0o022:
+        raise SystemExit("Claude user settings must not be group/world writable")
+    chunks = []
+    while chunk := os.read(fd, 65536):
+        chunks.append(chunk)
+finally:
+    os.close(fd)
+
+raw = b"".join(chunks)
+settings = json.loads(raw.decode("utf-8"))
+
+env = settings.get("env", {})
+if not isinstance(env, dict):
+    raise SystemExit("Claude settings field 'env' must be an object")
+
+name_pattern = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+for key in sorted(env):
+    value = env[key]
+    if not isinstance(key, str) or not name_pattern.fullmatch(key):
+        raise SystemExit(f"Invalid environment variable name: {key!r}")
+    if not isinstance(value, str):
+        raise SystemExit(f"Environment variable {key!r} must have a string value")
+    if "\0" in value:
+        raise SystemExit(f"Environment variable {key!r} contains a NUL byte")
+print(hashlib.sha256(raw).hexdigest())
+print(f"{stat.S_IMODE(metadata.st_mode):03o}")
+for key in sorted(env):
+    print(key)
+PY
+)"; then
+    die "failed to validate env in $settings_path"
+  fi
+
+  CLAUDE_USER_SETTINGS_PATH="$settings_path"
+  CLAUDE_USER_SETTINGS_HASH="${inspection%%$'\n'*}"
+  inspection="${inspection#*$'\n'}"
+  mode="${inspection%%$'\n'*}"
+  inspection="${inspection#*$'\n'}"
+  if [[ "$inspection" == "$mode" ]]; then
+    inspection=""
+  fi
+  mode_oct=$((8#$mode))
+  if (( (mode_oct & 077) != 0 )); then
+    printf 'delegate-claude.sh: warning: %s has mode %s; 600 is recommended for secret-bearing settings\n' \
+      "$settings_path" "$mode" >&2
+  fi
+  CLAUDE_IMPORTED_ENV_KEYS="${inspection//$'\n'/ }"
+  [[ -n "$CLAUDE_IMPORTED_ENV_KEYS" ]] || CLAUDE_IMPORTED_ENV_KEYS="none"
+}
+
+run_claude_with_user_env() {
+  python3 -c '
+import hashlib
+import json
+import os
+import re
+import stat
+import sys
+
+path, expected_hash, claude_bin, *claude_args = sys.argv[1:]
+fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+try:
+    metadata = os.fstat(fd)
+    if not stat.S_ISREG(metadata.st_mode):
+        raise SystemExit("Claude user settings must be a regular file")
+    if metadata.st_uid != os.getuid():
+        raise SystemExit("Claude user settings are not owned by the current user")
+    if stat.S_IMODE(metadata.st_mode) & 0o022:
+        raise SystemExit("Claude user settings must not be group/world writable")
+    chunks = []
+    while chunk := os.read(fd, 65536):
+        chunks.append(chunk)
+finally:
+    os.close(fd)
+
+raw = b"".join(chunks)
+if hashlib.sha256(raw).hexdigest() != expected_hash:
+    raise SystemExit("Claude user settings changed after validation; retry the delegation")
+
+settings = json.loads(raw.decode("utf-8"))
+env = settings.get("env", {})
+if not isinstance(env, dict):
+    raise SystemExit("Claude settings field env must be an object")
+
+name_pattern = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+for key, value in env.items():
+    if not isinstance(key, str) or not name_pattern.fullmatch(key):
+        raise SystemExit(f"Invalid environment variable name: {key!r}")
+    if not isinstance(value, str) or "\0" in value:
+        raise SystemExit(f"Invalid string value for environment variable {key!r}")
+
+child_env = os.environ.copy()
+child_env.update(env)
+os.execve(claude_bin, [claude_bin, *claude_args], child_env)
+' "$CLAUDE_USER_SETTINGS_PATH" "$CLAUDE_USER_SETTINGS_HASH" "$@"
 }
 
 # ---- argument parsing -------------------------------------------------------
@@ -196,7 +321,9 @@ esac
 # ---- repository context -----------------------------------------------------
 
 command -v git >/dev/null 2>&1 || die "git is required but not on PATH"
-command -v claude >/dev/null 2>&1 || die "claude (Claude Code) is required but not on PATH"
+claude_bin="$(command -v claude 2>/dev/null)" \
+  || die "claude (Claude Code) is required but not on PATH"
+claude_bin="$(readlink -f -- "$claude_bin")"
 
 root="$(git rev-parse --show-toplevel 2>/dev/null)" \
   || die "must run inside a git worktree"
@@ -257,7 +384,6 @@ require_git_clean \
   || die "worktree is not clean or status could not be inspected"
 
 worktree_path="$(git rev-parse --show-toplevel)"
-claude_version="$(claude --version 2>/dev/null | head -n1 || echo "unknown")"
 
 launcher_rel="scripts/delegate-claude.sh"
 git ls-files --error-unmatch -- "$launcher_rel" >/dev/null 2>&1 \
@@ -266,6 +392,16 @@ require_git_clean "$launcher_rel" \
   || die "canonical launcher has uncommitted changes or status could not be inspected: $launcher_rel"
 launcher_commit="$(git log -1 --format=%H -- "$launcher_rel")"
 launcher_id="committed $launcher_commit"
+
+inspect_claude_user_env
+if [[ "$dry_run" -eq 1 ]]; then
+  claude_version="not probed (dry run)"
+else
+  if ! claude_version="$(run_claude_with_user_env "$claude_bin" --version | head -n1)"; then
+    die "failed to run Claude Code with the imported user environment"
+  fi
+  [[ -n "$claude_version" ]] || claude_version="unknown"
+fi
 
 # ---- allowed matchers (profile defaults + extras) ---------------------------
 
@@ -308,6 +444,9 @@ Launcher-resolved execution envelope:
 - MCP: $MCP_POLICY
 - persistence: $PERSISTENCE_POLICY
 - settings: $SETTINGS_NOTE
+- user env source: $CLAUDE_USER_SETTINGS_PATH
+- user env keys: $CLAUDE_IMPORTED_ENV_KEYS
+- user env values: redacted
 - lifecycle authority: none
 
 The committed concrete prompt at $rel (commit $prompt_commit) follows verbatim.
@@ -322,7 +461,7 @@ readonly envelope_footer='---END CONCRETE PROMPT---'
 
 # ---- command construction ---------------------------------------------------
 
-cmd=(claude --print --permission-mode dontAsk --tools "$profile_tools"
+cmd=("$claude_bin" --print --permission-mode dontAsk --tools "$profile_tools"
     --allowed-tools "$allowed_joined" --mcp-config '{"mcpServers":{}}' --strict-mcp-config
     --setting-sources project --no-session-persistence --verbose --output-format stream-json)
 [[ -n "$model" ]] && cmd+=(--model "$model")
@@ -371,6 +510,9 @@ printf '  allowed matchers  : %s\n' "$allowed_joined" >&2
 printf '  extra grants      : %s\n' "$extra_grants" >&2
 printf '  runtime posture   : network %s; MCP %s; persistence %s; %s\n' \
   "$NETWORK_POLICY" "$MCP_POLICY" "$PERSISTENCE_POLICY" "$SETTINGS_NOTE" >&2
+printf '  user env source   : %s\n' "$CLAUDE_USER_SETTINGS_PATH" >&2
+printf '  user env keys     : %s\n' "$CLAUDE_IMPORTED_ENV_KEYS" >&2
+printf '  user env values   : redacted\n' >&2
 
 stream_handoff() {
   printf '%s\n' "$envelope_header" || return
@@ -379,7 +521,7 @@ stream_handoff() {
 }
 
 set +e
-stream_handoff | "${cmd[@]}"
+stream_handoff | run_claude_with_user_env "${cmd[@]}"
 pipeline_status=("${PIPESTATUS[@]}")
 producer_rc="${pipeline_status[0]}"
 claude_rc="${pipeline_status[1]}"

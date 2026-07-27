@@ -187,3 +187,11 @@ Final acceptance evidence:
 - `main` remained at the planned base `38b059d`; no rebase was required.
 
 The accepted implementation retains all task commit boundaries. Residual risks remain as recorded above: no authenticated live Claude run succeeded in this OAuth environment, generic Bash is a trust grant rather than a sandbox, and future Claude CLI changes require renewed verification.
+
+## Direct follow-up: user environment import
+
+At the user's direction, Amp implemented this follow-up directly rather than delegating it. The launcher continues to use project-only Claude settings, but now validates and imports only the top-level `env` object from `~/.claude/settings.json` into the Claude subprocess. Global permissions, model, effort, hooks, and other user settings remain excluded. The source path and key names are auditable; values remain redacted and are transferred without shell evaluation or command arguments.
+
+The launcher requires current-user ownership, rejects group/world-writable settings, and recommends mode `600` without requiring it when parent-directory permissions already protect a less restrictive read mode. Imported values remain visible to Claude and its tool subprocesses; this supplies the previously missing authentication environment but does not provide secret or process isolation. An authenticated delegated model run remains required before claiming the environment-specific OAuth gap is closed end to end.
+
+Focused verification passed with disposable fake-Claude fixtures: dry run validated the real user settings without invoking or version-probing Claude; a live-path fixture preserved multiline, empty, shell-like, `RANDOM`, and `LINENO` values exactly through Python `execve`; `bash -x` exposed no values; global model and permission settings were not loaded; a settings change between inspection and execution was rejected before the second Claude invocation; and group/world-writable or non-string environment inputs failed closed. `bash -n scripts/delegate-claude.sh` and `git diff --check` also passed. No real credentials or values were printed during verification.

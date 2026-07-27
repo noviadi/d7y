@@ -47,7 +47,7 @@ Make Amp-to-Claude Code implementation delegation auditable and repeatable by pr
 
 - Preserve and commit the concrete prompt **before** creating the task worktree. The launcher rejects an untracked, uncommitted, or dirty prompt.
 - Use the launcher by default for isolated Claude Code handoffs. The first bootstrap of this system may invoke Claude Code directly because the launcher did not yet exist; constrain that direct invocation equivalently and record its exact posture in review.
-- During review, record the prompt path, prompt commit, launcher commit, resolved base/starting `HEAD`, current branch and worktree, Claude Code version, model/effort, permission profile, extra grants, and the resulting tip. The launcher reports these in a dry run (`--dry-run`) and in its non-destructive postflight.
+- During review, record the prompt path, prompt commit, launcher commit, resolved base/starting `HEAD`, current branch and worktree, Claude Code version, model/effort, permission profile, extra grants, user-environment source and imported key names (never values), and the resulting tip. The launcher reports these in a dry run (`--dry-run`) and in its non-destructive postflight.
 - Treat prompt preservation as evidence of reproducible inputs, not proof of deterministic model output or sandboxing. A profile and prompt narrow the tool surface; they do not isolate filesystem paths or processes.
 - Retain lifecycle authority: normal Claude implementation handoffs never delegate rebase, merge, push, worktree removal, or branch deletion. The launcher detects and reports preconditions and postconditions but never mutates Git state.
 

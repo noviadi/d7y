@@ -66,6 +66,12 @@ The launcher exposes two reviewed defaults:
 
 Repeatable `--allow-tool <matcher>` arguments add Claude Code permission matchers. They never execute prompt text and cannot expose a built-in omitted by the profile's `--tools` set. Preserve every required extra matcher in the concrete prompt so review can reconstruct the intended posture.
 
+## User environment import
+
+The launcher keeps Claude settings project-only so global `permissions`, `model`, `effortLevel`, and other behavior are not inherited. Before invocation it validates the top-level `env` object in `~/.claude/settings.json`, then a Python `execve` wrapper imports only those key/value pairs into the Claude subprocess. Bash never materializes the values, and they are never evaluated as shell, printed, persisted, or placed in process arguments. Inspection and execution each read and validate one file descriptor; execution also verifies the exact content hash observed during inspection. The runtime envelope reports the resolved source and imported key names with values redacted. Dry runs validate this source but do not start or version-probe Claude.
+
+The settings file must be owned by the current user and must not be group/world writable. Mode `600` is recommended for defense in depth when the file contains credentials; a less restrictive read mode is allowed because parent-directory permissions may already prevent access. Imported values are available to Claude and its tool subprocesses, so this is settings isolation—not secret isolation or a substitute for sandboxing.
+
 ## Effective-instruction limitations
 
 A prompt constrains an executor; it does not control it the way code controls a function.
