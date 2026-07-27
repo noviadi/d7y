@@ -171,3 +171,14 @@ Unchanged from the prior feedback: these are unenforced workflow rules by design
 ### Decisions returned
 
 None requiring Amp/human reconciliation. No consequential ambiguity encountered; no stop condition triggered.
+
+## Amp acceptance
+
+Accepted on 2026-07-27 after reviewing the complete committed range `944ae7310c991da3f4a4023421bf34c8bff7125f...6972cc271248c1fe107ced44da9aa0c6e3998fd1`.
+
+- The task worktree was clean and `git diff --check` passed for the accepted range.
+- `AGENTS.md` and `CLAUDE.md` agree on the sibling `../d7y-worktrees/<slug>` path, private non-main `work/<slug>` branches, committed plan and task inputs, the required handoff payload, Claude Code never committing directly to `main`, review of clean committed branch state, conditional rebase with repeated verification and review, `git merge --ff-only`, no squash, non-forced cleanup, and preservation of every accepted branch commit.
+- The six findings in the preceding Amp review are resolved by commit `6972cc271248c1fe107ced44da9aa0c6e3998fd1`.
+- `main` remained at the recorded base `944ae7310c991da3f4a4023421bf34c8bff7125f`, so no rebase was required before integration.
+
+This acceptance records static documentation review, not automated enforcement or behavioral validation of future handoffs.
