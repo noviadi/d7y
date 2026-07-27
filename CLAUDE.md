@@ -26,6 +26,7 @@ Read the relevant canonical document before changing its domain. Treat contradic
 ## How Claude Code executes
 
 - **Execute an identified plan.** When a plan in `docs/plans/` governs the task, implement its scoped change and stop at its boundaries.
+- **Use the canonical plan inventory.** When asked to list, inspect, select, reconcile, or check the status of plans, begin with `./d7y dev plans` (using `--all` or `--done` when needed), then inspect the relevant plan and implementation evidence before changing status. Fall back to direct file inspection only when the CLI is unavailable or the task is to debug it, and report the fallback.
 - **Verify before editing.** Confirm assumptions against the current worktree before changing files.
 - **Make the smallest change** that satisfies the plan. Do not expand scope, add abstractions, directories, schemas, agents, or workflow stages the plan does not require.
 - **Preserve invariants.** Keep intent human-owned, evidence traceable, uncertainty visible, and respect the thin-harness/fat-skills boundary, synthetic-fixture rules, and skill/initiative validation requirements.

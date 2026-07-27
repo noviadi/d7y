@@ -14,6 +14,8 @@ Amp's responsibilities:
 
 Plans are handoff and feedback surfaces, not canonical product truth. Amp incorporates accepted implementation learning into the owning canonical document and updates or closes the plan without treating an implementation report as automatically accepted canon.
 
+When asked to list, inspect, select, reconcile, or check the status of plans, begin with `./d7y dev plans` (using `--all` or `--done` when needed) as the canonical plan inventory. Then inspect the relevant plan content and implementation evidence before changing status; inventory metadata alone does not prove that a plan is complete or stale. Fall back to direct file inspection only when the CLI is unavailable or the task is to debug it, and make that fallback visible.
+
 The companion execution constitution is `CLAUDE.md`. The two share canon; they are not an inheritance chain.
 
 ## Worktree-isolated implementation handoffs
