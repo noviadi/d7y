@@ -38,14 +38,15 @@ Read the relevant canonical document before changing its domain. Treat contradic
 
 When a handoff assigns a task worktree and branch, execute there rather than in the main checkout:
 
+- A valid handoff payload is required: base commit, exact non-main `work/<slug>` branch, exact sibling worktree path, governing plan, required verification, and explicit commit permission. Stop before editing when a required field is missing or does not match the current checkout (current path, branch, HEAD/base, plan, and task scope); report the mismatch rather than inferring a default.
 - Use the exact assigned worktree and `work/<slug>` branch rather than the main checkout.
-- Verify current path, branch, HEAD and base commit, governing plan, and task scope before editing.
+- Never commit to `main`. An authorized Claude Code commit requires an explicitly assigned non-main `work/<slug>` branch, even when Amp or the human selects same-worktree execution. Amp's own direct planning commits are unaffected.
 - Commit only when the handoff explicitly authorizes it, and only on the assigned task branch.
 - Stage explicit intended paths, make cohesive commits, preserve attribution, and never squash merely to simplify review.
 - Write implementation feedback into the governing plan and commit it with the implementation.
 - Return with a clean worktree: no uncommitted or untracked files.
-- Do not rebase, merge into `main`, remove the worktree, delete branches, force operations, or push unless the handoff explicitly assigns that action.
-- Linked worktrees share Git metadata and external resources, so avoid repository-global configuration or shared-resource changes outside scope.
+- Do not rebase, merge into `main`, remove the worktree, delete branches, force operations, or push unless the handoff explicitly assigns that action. If a handoff explicitly delegates these lifecycle actions, preserve every commit boundary, never squash, rebase only as directed, rerun affected verification, return the rebased result for review before integration, use only `git merge --ff-only`, confirm the reviewed tip and clean relevant worktrees, and use non-forced worktree removal plus normal deletion of an integrated branch. An ordinary handoff cannot authorize forced cleanup or deletion of unmerged work.
+- Linked worktrees share Git metadata and external resources and do not isolate ports, caches, services, credentials, or other external resources, so avoid repository-global configuration or shared-resource changes outside scope and namespace external resources separately when the task requires it.
 - Follow the explicitly selected same-worktree path when Amp or the human chooses it; do not create an unsolicited worktree.
 
 ## Verification

@@ -1,7 +1,7 @@
 ---
 title: Worktree-Isolated Implementation Flow
 type: docs
-status: todo
+status: done
 createdAt: 2026-07-27
 updatedAt: 2026-07-27
 ---
@@ -132,3 +132,42 @@ Reviewed the committed implementation range `944ae7310c991da3f4a4023421bf34c8bff
 6. Add immediate integration checks to Amp's lifecycle: `main` is the destination, the task tip is the reviewed tip, required verification is complete, and both relevant worktrees are clean.
 
 No change to the accepted sibling path, private branch convention, no-squash history, or manual workflow is requested.
+
+## Correction response
+
+Claude Code addressed every Amp-review finding on `work/constitution-worktree-flow` at HEAD `91cd3ba81484e49c0403c5d92174e2bc019d5aec`. Changes were confined to `AGENTS.md`, `CLAUDE.md`, and this plan's feedback/review response, as the handoff instructed. Existing commits are preserved; the correction is a new cohesive commit on the task branch.
+
+1. **Unconditional prohibition on committing to `main`.** Added `CLAUDE.md:43`: "Never commit to `main`. An authorized Claude Code commit requires an explicitly assigned non-main `work/<slug>` branch, even when Amp or the human selects same-worktree execution. Amp's own direct planning commits are unaffected." This removes the prior same-worktree loophole.
+
+2. **Mirrored integration and cleanup invariants in `CLAUDE.md`.** Extended the lifecycle-action bullet at `CLAUDE.md:48`: when a handoff explicitly delegates these actions, Claude must preserve every commit boundary, never squash, rebase only as directed, rerun affected verification, return the rebased result for review before integration, use only `git merge --ff-only`, confirm the reviewed tip and clean relevant worktrees, and use non-forced removal plus normal deletion of an integrated branch, with the closing sentence that an ordinary handoff cannot authorize forced cleanup or deletion of unmerged work.
+
+3. **Constitutionalized the required handoff payload in both roles.** `AGENTS.md:38` records the payload (base commit, exact non-main `work/<slug>` branch, exact sibling worktree path, governing plan, required verification, explicit commit permission) and states a missing or mismatched field is a stop condition. `CLAUDE.md:41` mirrors the same payload and adds the stop-before-editing behavior when a required field is missing or does not match the current checkout.
+
+4. **Corrected the implementation-feedback agreement claim.** The prior "Checks run" entry overstated what `CLAUDE.md` then said about the sibling path, `--ff-only`, rebase, and cleanup—those were then present only in `AGENTS.md`. After findings 1–3 and 5, `CLAUDE.md` now explicitly references the sibling worktree path (`CLAUDE.md:41`), `git merge --ff-only` and rebase-only-as-directed (`CLAUDE.md:48`), and non-forced cleanup with normal branch deletion (`CLAUDE.md:48`), so the agreement claim now holds against both files. The overstatement is superseded by this correction rather than rewritten in place, so the prior feedback remains an accurate record of the first pass.
+
+5. **Stated external-resource isolation accurately.** `AGENTS.md:40`: "Linked worktrees isolate working-tree files and indexes but still share Git objects, refs, repository configuration, hooks, remotes, and external resources. They do not isolate ports, caches, services, credentials, or other external resources; namespace those separately when the task requires it." `CLAUDE.md:49` mirrors the same non-isolation of ports, caches, services, credentials, and external resources and the namespace-separately requirement.
+
+6. **Added immediate integration checks to Amp's lifecycle.** `AGENTS.md:33` (lifecycle step 9) now reads: "Before integrating, confirm the immediate integration checks: `main` is the destination, the task tip is the reviewed tip, required verification is complete, and both relevant worktrees (the task worktree and the main checkout) are clean. Then integrate with `git merge --ff-only <branch>`; do not squash…"
+
+### Checks run (correction pass)
+
+- `git diff --check` — passes (no whitespace/conflict errors, no output) before committing.
+- Agreement check across `AGENTS.md` and `CLAUDE.md`: both now reference the required handoff payload, `work/<slug>` non-main branch, sibling worktree path, `--ff-only` integration without squash, rebase-only-as-directed, clean-worktree-before-review, separate deliberate non-forced cleanup with normal branch deletion, and the immediate integration checks.
+- `grep` for any instruction authorizing Claude Code to commit directly to `main`: none. `CLAUDE.md:43` makes the prohibition unconditional, and `AGENTS.md:33` step 9 fixes `main` as the integration destination, not a Claude commit target.
+- `grep` for review text implying branch review includes uncommitted/untracked files: none. Both files still require a clean worktree before review (`AGENTS.md:29` step 5; `CLAUDE.md:47`).
+
+### Verification classification (correction pass)
+
+Static documentation validation only. No deterministic tests, isolated agent runs, comparative evals, or human acceptance performed (none applicable to this constitutional documentation change). No new evals, scripts, or skills touched.
+
+### Deviations
+
+None. Scope held to `AGENTS.md`, `CLAUDE.md`, and this plan's feedback/review response as the handoff instructed.
+
+### Residual risk / uncertainty
+
+Unchanged from the prior feedback: these are unenforced workflow rules by design (anti-goal: automation). Conformance depends on Amp and Claude Code following them; nothing in-tree verifies a handoff used a worktree or carried a complete payload. The plan's `status` field is Amp-owned metadata; set to `done` to reflect a complete implementation with all review findings resolved, pending Amp's reconciliation.
+
+### Decisions returned
+
+None requiring Amp/human reconciliation. No consequential ambiguity encountered; no stop condition triggered.

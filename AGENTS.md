@@ -30,12 +30,14 @@ Amp owns the handoff lifecycle:
 6. Review branch commits, the complete `main...branch` diff, plan feedback, verification evidence, deviations, and residual risk.
 7. Keep corrections and review feedback on the task branch.
 8. Rebase onto current `main` when necessary, then rerun affected verification and review the rebased result.
-9. Integrate with `git merge --ff-only <branch>`; do not squash. Preserve every accepted task-branch commit and its authorship—rebase may rewrite commit IDs but must not collapse commit boundaries.
+9. Before integrating, confirm the immediate integration checks: `main` is the destination, the task tip is the reviewed tip, required verification is complete, and both relevant worktrees (the task worktree and the main checkout) are clean. Then integrate with `git merge --ff-only <branch>`; do not squash. Preserve every accepted task-branch commit and its authorship—rebase may rewrite commit IDs but must not collapse commit boundaries.
 10. Treat cleanup as separate and deliberate: confirm integration and a clean worktree before non-forced worktree removal, then delete the merged branch normally.
 
 If `--ff-only` cannot advance `main` to the reviewed tip, rebase and repeat final verification and review rather than creating an incidental merge commit.
 
-Linked worktrees isolate files and indexes but still share Git objects, refs, repository configuration, hooks, remotes, and external resources. Integrations into `main` are serialized.
+A worktree handoff must record its required payload: the base commit, the exact non-main `work/<slug>` branch, the exact sibling worktree path, the governing plan, the required verification, and explicit permission for Claude Code to commit on that branch. A missing or mismatched required field is a stop condition, not a default to infer.
+
+Linked worktrees isolate working-tree files and indexes but still share Git objects, refs, repository configuration, hooks, remotes, and external resources. They do not isolate ports, caches, services, credentials, or other external resources; namespace those separately when the task requires it. Integrations into `main` are serialized.
 
 Same-worktree execution is acceptable when the work is trivial and reversible, intentionally depends on uncommitted state, directly corrects an uncommitted change, uses linked-worktree-incompatible tooling, requires a serialized live handoff edit, or the human chooses the lighter path. Same-worktree execution remains serialized and must account for untracked files.
 
