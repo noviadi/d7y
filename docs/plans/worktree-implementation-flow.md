@@ -1,7 +1,7 @@
 ---
 title: Worktree-Isolated Implementation Flow
 type: docs
-status: done
+status: todo
 createdAt: 2026-07-27
 updatedAt: 2026-07-27
 ---
@@ -119,3 +119,16 @@ None. Scope was held to `AGENTS.md`, `CLAUDE.md`, and this plan's feedback as th
 ### Decisions returned
 
 None requiring Amp/human reconciliation. No consequential ambiguity encountered; no stop condition triggered (base commit present, plan committed at base, assigned branch/worktree used, clean start).
+
+## Amp review
+
+Reviewed the committed implementation range `944ae7310c991da3f4a4023421bf34c8bff7125f...f4c6d0bd94e88c0bb39129e35de97a505a775330` on 2026-07-27. The task worktree was clean and `git diff --check` passed. Integration is blocked pending these corrections:
+
+1. Make the prohibition on Claude Code committing to `main` unconditional. Even when Amp or the human selects same-worktree execution, an authorized Claude commit requires an explicitly assigned non-main `work/<slug>` branch. Amp's own direct planning commits are unaffected.
+2. Mirror integration and cleanup invariants in `CLAUDE.md` because it does not inherit `AGENTS.md`. If a handoff explicitly delegates lifecycle actions, Claude must still preserve commit boundaries, never squash, rebase only as directed, rerun affected verification, return the rebased result for review before integration, use only `git merge --ff-only`, confirm the reviewed tip and clean relevant worktrees, and use non-forced removal plus normal deletion of an integrated branch. An ordinary handoff cannot authorize forced cleanup or deletion of unmerged work.
+3. Constitutionalize the required handoff payload in both roles: base commit, exact non-main branch, exact worktree path, governing plan, required verification, and explicit commit permission. Claude stops before editing when a required field is missing or does not match the current checkout.
+4. Correct the implementation feedback's agreement claim after making these changes. It currently overstates what `CLAUDE.md` says about the sibling path, `--ff-only`, rebase, and cleanup.
+5. State external-resource isolation accurately: linked worktrees do not isolate ports, caches, services, credentials, or other external resources; namespace them separately when the task requires it.
+6. Add immediate integration checks to Amp's lifecycle: `main` is the destination, the task tip is the reviewed tip, required verification is complete, and both relevant worktrees are clean.
+
+No change to the accepted sibling path, private branch convention, no-squash history, or manual workflow is requested.
