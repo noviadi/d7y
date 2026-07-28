@@ -24,6 +24,7 @@ Correct the rejected eval-runner rewrite on `work/eval-execution-harness` so its
 ## Permission and runtime posture
 
 - Launcher profile: `implementation-commit`.
+- Launcher model/effort: `opus --effort medium`. This deliberately avoids repeating the twice-stalled `opus --effort high` posture. The expected routed assistant model in this user environment is GLM-5.2; stop and report before editing if routing resolves differently.
 - Extra tool grants: none.
 - Network: prohibited. Never invoke a nested live Claude run or external service. Use strict behavioral fake executors and committed parser fixtures only.
 - MCP: strict-empty. Persistence: disabled.
