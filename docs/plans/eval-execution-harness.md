@@ -264,12 +264,12 @@ Focused acceptance cases must include suppression canaries for user or project i
 
 ### Execution posture
 
-Third incremental correction (independent offline review pass), on branch `work/eval-execution-harness`, base `fb16263`. Launcher model alias `opus`; routed assistant model in this environment is GLM-5.2. The runner's requested contract model is `claude-sonnet-5`; the only routed assistant event supported by committed capability evidence is `glm-4.7`. Routing distinction is preserved and is not evidence for the runner's eventual live model contract.
+Fourth incremental correction (narrow D7Y evidence-contract pass), on branch `work/eval-execution-harness`, base `17a297c`. Launcher model alias `opus`; routed assistant model in this environment is GLM-5.2. The runner's requested contract model is `claude-sonnet-5`; the only routed assistant event supported by committed capability evidence is `glm-4.7`. No runner or plan redesign; no scope expansion.
 
 ### Files changed (this correction)
 
-- `evals/run_eval.py` — complete retained-metadata redaction (filenames, directory names, symlink targets); strict correlation of every Bash tool_use; strict runtime-metadata validation (non-string skills, full plugin structure, strict result-field types); broadened independent-checker exception handling.
-- `evals/test_run_eval.py` — 68 tests. Behavioral fakes use independent literal contract values and self-contained inventory lists; new public tests cover secret-bearing filenames/symlink targets, extra/unmatched Bash uses, malformed plugin/skill entries, strict result types, and checker exceptions.
+- `evals/run_eval.py` — `_validate_d7y_result` now requires the complete installed D7Y result shape; the `runs-checker-before-and-after` assertion returns `ungradable` for structurally unsupported traces and reserves `fail` for explicit observed failures.
+- `evals/test_run_eval.py` — 79 tests. Added `TestD7YResultShape` (unit cases for every required/invalid result field), a `make_process_trace_fake` behavioral fake, and a public contract test; updated existing parser fixtures to the complete result shape.
 - `docs/plans/eval-execution-harness.md` — this section (replaced, not appended).
 
 ### Implemented command
@@ -281,30 +281,22 @@ python3 evals/run_eval.py --source-repo <repo> --suite <repo-relative-evals.json
 
 ### Correction coverage (proven by tests)
 
-1. **Neutral per-arm prompt.** The wrapper only names the absolute workspace, requires work there, and requires any D7Y command include `--root <workspace>`; it never names list/check/ordering/creation. Both arms differ only in workspace path.
-2. **Complete imported-value redaction.** Tokens are acquired before any validation failure; `redact_obj`/`redact_text` redact JSON keys and values; every persisted artifact and stdout/stderr diagnostic is sanitized; `sanitize_workspace` now redacts file contents, renames files/directories whose basename carries a token, and removes symlinks; the hash-only `workspace-snapshot.json` never stores raw content or raw symlink targets (only `link_target_hash`). `test_imported_env_value_redacted_from_every_output_entry` scans every output path component, symlink target, and file content (no exclusion), emitting the synthetic value through stdout, stderr, a tool result, the final response, checker-visible output, a secret-named file, and a secret-target symlink.
-3. **Correlated exact D7Y command execution.** `analyze_d7y_commands` requires every Bash `tool_use` to correlate with exactly one later `tool_result` (rejects missing/duplicate/ambiguous/preceding results and duplicate IDs), validates the versioned D7Y result shape and root, requires successful list before successful check, and counts extra/unrelated Bash commands; only the exact ordered `list` then `check` (no extras) passes. Absent/ambiguous/unsupported shapes are `ungradable`. `test_extra_bash_use_lacking_result_blocks` and new unit cases cover unmatched/extra Bash uses.
-4. **Exact runtime and terminal state.** Exact with-skill `{target, doctor}` and baseline `{doctor}` sets with every skill entry required to be a string; exactly one structurally valid expected plugin (name + path + version, correct types); `exit_code == 0` required (`None` invalid); strict result-field type identity (`type(x) is int` rejects bool for `num_turns`); canonical `modelUsage` provider + `canonicalModel` shape; routed allowlist `{claude-sonnet-5, glm-4.7}`. New unit cases cover non-string skills, malformed plugins, and bool `num_turns`.
-5. **Atomic complete preflight planning.** Both workspace maps and all immutable objects/symlinks/containment/collisions are validated before the first write; context and placeholder arms attach immediately after output creation; post-output isolation failures still finalize.
-6. **Complete canary scan.** Recursive scan of every event/result string for the signal/markers; exact-identity global-skill discovery/invocation. Leakage tested across assistant text, Bash input, tool result, result text, and nested metadata.
-7. **Identical evidence inventory for every outcome.** Both placeholder arms created at output creation; one per-arm and one run-level finalization path. For preflight failure after output, executable-resolution failure, spawn failure, malformed stream, nonzero exit, timeout, **independent-checker exception**, and normal completion: the same named inventory plus top-level manifest/source-before/source-after/checks/summary are emitted. `test_checker_exception_contained` forces a checker decode exception and asserts it is recorded (`state: checker_error`) with full inventory (including baseline) intact.
-8. **Exact declaration dispatch and complete filesystem evidence.** Exact supported assertion-ID table (no prefix matching); unknown deterministic IDs are `ungradable`; `creates-no-duplicate` proves the staged canonical initiative remains present/unchanged and no second was added (deletion fails); unsupported skills are preflight-rejected; `snapshot_workspace` lstat's every entry (file/dir/symlink) with type/mode/content-hash/link-target-hash and reports added/modified/deleted/type-changed.
-9. **Behavioral fakes independent of production parsing.** Public-test fakes never import `evals.run_eval`; the canary signal is an independent literal (`CANARY_SIGNAL`), and the authoritative artifact inventory is defined independently in the tests (`EXPECTED_ARM_ARTIFACTS`/`EXPECTED_TOP_LEVEL_ARTIFACTS`). Production imports remain only in narrow unit tests.
+1. **Complete supported D7Y JSON result.** `_validate_d7y_result` requires exactly: `version` integer `1`; `root` a nonempty string exactly matching the arm workspace; `valid` exactly boolean `true`; `count` an integer (not boolean); `errors`, `warnings`, and `initiatives` lists. The minimal `{"version": 1, "valid": true}` shape is rejected. `TestD7YResultShape` covers missing root, wrong root, missing count, boolean count, non-list errors/warnings/initiatives, `valid: false`, the minimal shape, and a complete valid result. Agent-command evidence stays separate from the independent checker.
+2. **Unsupported traces are ungradable.** For `runs-checker-before-and-after`, after the every-Bash-correlation gate, any extra Bash command, a missing/wrong-shaped/malformed-result command, or an otherwise incomplete trace returns `ungradable`. Only `pass` is the exact ordered `list` then `check` with one later successful complete result each and no extras. Explicit observed failures remain deterministic `fail`: a correctly-shaped command whose result `is_error: true`, and reversed valid commands. `test_process_assertion_d7y_contract` proves: complete pair passes; minimal result JSON ungradable; missing result fields ungradable; extra correlated Bash command ungradable; no D7Y commands plus unrelated tool results ungradable; reversed valid commands fail (not pass).
+
+### Preserve (no regression)
+
+Neutral prompts and exact argv; complete recursive redaction (contents, filenames, directory names, symlink targets); every-Bash correlation; strict runtime metadata; canary detection; atomic preflight; complete inventories for every outcome; timeout/process-group reaping; source integrity; independent-checker exception containment; exact assertion dispatch — all retained and still covered by the prior public tests.
 
 ### Exact verification results
 
 - `python3 evals/validate_skill_evals.py` — both suites VALID.
-- `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s evals -p 'test_*.py'` — 68 tests, OK.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s evals -p 'test_*.py'` — 79 tests, OK.
 - `./d7y validate` — evals and initiatives valid.
-- `git diff --check` — clean.
 - `git diff --check main...HEAD` — clean (rc=0).
-
-### Public dry-run evidence
-
-Dry-run against committed `start-new-initiative` with an invocation-recording executable, synthetic user settings, and a disposable new output path: exit 0; no executable invocation/version probe; recorded arm argv with no top-level `--root` and one `--tools` value; neutral prompt (no `initiatives list`/`initiatives check` directives) whose workspace matches each arm; manifest, artifacts, and retained workspace sanitized across paths, filenames, symlink targets, and contents (no source path, no imported env value) with key-name provenance retained; source checkout clean. Disposable output removed. Never run against real Claude.
 
 ### Deferred live gates / residual risk
 
 - No live Claude run was executed (network prohibited). The first real `starting-initiatives` qualification pair, real skill-resource portability, production timeout behavior, suppression-canary effectiveness against the live CLI, the live `d7y` command/tool_result stream contract, and model-routing observations remain Amp's independent live gates.
-- Offline fakes prove placement, detection, parsing, redaction, correlation, and reaping mechanics only — not runtime portability or live suppression. The branch remains blocked pending another independent offline review and the retained live qualification gates.
-- Schema, suites, `SKILL.md`, `d7y`, initiative canon, other skills/plans, prompts, and `DEVELOPMENT.md` were not modified in this correction. Plan status remains `todo`.
+- Offline fakes prove contract mechanics only — not runtime portability or live suppression. The branch remains blocked pending another independent offline review and the retained live qualification gates.
+- Schema, suites, `SKILL.md`, `d7y`, initiative canon, other skills/plans, prompts, and `DEVELOPMENT.md` were not modified. Plan status remains `todo`.

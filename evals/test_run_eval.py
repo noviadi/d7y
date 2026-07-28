@@ -512,6 +512,58 @@ def make_mutator_fake(tmp: Path, mutation: str) -> Path:
     return _write_fake(tmp, "mut-" + mutation, behavior)[0]
 
 
+def make_process_trace_fake(tmp: Path, variant: str) -> Path:
+    """Emit a valid with-skill arm whose d7y command trace is controlled.
+
+    Variants exercise the runs-checker-before-and-after contract: only the
+    exact complete list-then-check trace passes; minimal/missing-field results,
+    extra correlated Bash, no d7y commands, and unsupported shapes are
+    ungradable; reversed valid commands fail.
+    """
+    base = (
+        "import glob as _glob\n"
+        "_matches = _glob.glob(os.path.join(_plugin or '', 'skills', '*', 'SKILL.md')) if _plugin else []\n"
+        "_has_skill = bool(_matches)\n"
+        "_skill_name = os.path.basename(os.path.dirname(_matches[0])) if _matches else None\n"
+        "_target = ('d7y-eval-session:' + _skill_name) if _has_skill else None\n"
+        "_skills = [_target, 'doctor'] if _has_skill else ['doctor']\n"
+        "_pname = 'd7y-eval-session' if _has_skill else 'd7y-eval-control'\n"
+        "_sid = 'pt-' + str(os.getpid())\n"
+        "print(json.dumps({'type': 'system', 'subtype': 'init', 'session_id': _sid, "
+        "'tools': ['Skill', 'Read', 'Write', 'Edit', 'Bash'], 'model': 'claude-sonnet-5', "
+        "'skills': _skills, 'plugins': [{'name': _pname, 'path': _plugin or '', 'version': '0.0.1'}], "
+        "'mcp_servers': [], 'permissionMode': 'dontAsk'}))\n"
+        "_ok = '{\"version\":1,\"root\":' + json.dumps(_root) + ',\"valid\":true,\"count\":0,"
+        "\"errors\":[],\"warnings\":[],\"initiatives\":[]}'\n"
+        "_min = '{\"version\":1,\"valid\":true}'\n"
+        "_miss = '{\"version\":1,\"root\":' + json.dumps(_root) + ',\"valid\":true,"
+        "\"errors\":[],\"warnings\":[],\"initiatives\":[]}'\n"
+        "_L = 'd7y initiatives list --root ' + _root + ' --json'\n"
+        "_C = 'd7y initiatives check --root ' + _root + ' --json'\n"
+        "def _bash(i, c): print(json.dumps({'type': 'assistant', 'message': {'role': 'assistant', "
+        "'model': 'glm-4.7', 'content': [{'type': 'tool_use', 'id': i, 'name': 'Bash', "
+        "'input': {'command': c}}]}}))\n"
+        "def _res(i, t, e=False): print(json.dumps({'type': 'user', 'message': {'role': 'user', "
+        "'content': [{'type': 'tool_result', 'tool_use_id': i, 'content': t, 'is_error': e}]}}))\n"
+        "if _has_skill:\n"
+    )
+    variants = {
+        "complete": "    _bash('a', _L); _bash('b', _C); _res('a', _ok); _res('b', _ok)\n",
+        "minimal": "    _bash('a', _L); _bash('b', _C); _res('a', _min); _res('b', _min)\n",
+        "missing-fields": "    _bash('a', _L); _bash('b', _C); _res('a', _miss); _res('b', _ok)\n",
+        "extra-correlated": "    _bash('a', _L); _bash('b', _C); _bash('z', 'ls'); _res('a', _ok); _res('b', _ok); _res('z', 'out')\n",
+        "none": "    _bash('z', 'ls'); _res('z', 'out')\n",
+        "reversed": "    _bash('b', _C); _bash('a', _L); _res('b', _ok); _res('a', _ok)\n",
+    }
+    tail = (
+        "print(json.dumps({'type': 'result', 'subtype': 'success', 'result': 'ok', 'is_error': False, "
+        "'num_turns': 6, 'permission_denials': [], "
+        "'modelUsage': {'claude-sonnet-5': {'provider': 'firstParty', 'canonicalModel': 'claude-sonnet-5'}}}))\n"
+        "sys.exit(0)\n"
+    )
+    return _write_fake(tmp, "proc-" + variant, base + variants[variant] + tail)[0]
+
+
 # ---------------------------------------------------------------------------
 # Narrow unit tests: production parser, path, redaction primitives.
 # ---------------------------------------------------------------------------
@@ -603,6 +655,11 @@ def _tool_result(tid, content, *, is_error=False, index=99):
     ]}})
 
 
+def _ok_result(ws="/ws", count=0):
+    return json.dumps({"version": 1, "root": ws, "valid": True, "count": count,
+                       "errors": [], "warnings": [], "initiatives": []})
+
+
 class TestD7YCommandAnalysis(unittest.TestCase):
     WS = "/ws"
 
@@ -614,8 +671,8 @@ class TestD7YCommandAnalysis(unittest.TestCase):
         out = self._analyze([
             _bash_use("a", "d7y initiatives list --root /ws --json", 1),
             _bash_use("b", "d7y initiatives check --root /ws --json", 2),
-            _tool_result("a", '{"version":1,"root":"/ws","valid":true}', index=3),
-            _tool_result("b", '{"version":1,"root":"/ws","valid":true}', index=4),
+            _tool_result("a", _ok_result(), index=3),
+            _tool_result("b", _ok_result(count=1), index=4),
         ])
         self.assertTrue(out["shape_supported"])
         self.assertEqual(out["list"]["class"], "ok")
@@ -649,7 +706,7 @@ class TestD7YCommandAnalysis(unittest.TestCase):
         out = self._analyze([
             _bash_use("a", "d7y initiatives list --root /ws --json", 1),
             _bash_use("z", "ls", 2),
-            _tool_result("a", '{"version":1,"valid":true}', index=3),
+            _tool_result("a", _ok_result(), index=3),
         ])
         self.assertFalse(out["shape_supported"])
         self.assertIn("z", out["uncorrelated_bash_ids"])
@@ -659,8 +716,8 @@ class TestD7YCommandAnalysis(unittest.TestCase):
             _bash_use("a", "d7y initiatives list --root /ws --json", 1),
             _bash_use("b", "d7y initiatives check --root /ws --json", 2),
             _bash_use("z", "ls", 3),
-            _tool_result("a", '{"version":1,"valid":true}', index=4),
-            _tool_result("b", '{"version":1,"valid":true}', index=5),
+            _tool_result("a", _ok_result(), index=4),
+            _tool_result("b", _ok_result(count=1), index=5),
             _tool_result("z", "out", index=6),
         ])
         self.assertTrue(out["shape_supported"])
@@ -677,14 +734,14 @@ class TestD7YCommandAnalysis(unittest.TestCase):
         out = self._analyze([
             _bash_use("b", "d7y initiatives check --root /ws --json", 1),
             _bash_use("a", "d7y initiatives list --root /ws --json", 2),
-            _tool_result("a", '{"version":1,"valid":true}', index=3),
-            _tool_result("b", '{"version":1,"valid":true}', index=4),
+            _tool_result("a", _ok_result(), index=3),
+            _tool_result("b", _ok_result(count=1), index=4),
         ])
         self.assertFalse(out["order_ok"])
 
     def test_result_before_use_unsupported(self):
         out = self._analyze([
-            _tool_result("a", '{"version":1,"valid":true}', index=0),
+            _tool_result("a", _ok_result(), index=0),
             _bash_use("a", "d7y initiatives list --root /ws --json", 1),
         ])
         self.assertEqual(out["list"]["class"], "result_before_use")
@@ -692,8 +749,8 @@ class TestD7YCommandAnalysis(unittest.TestCase):
     def test_duplicate_result_id_unsupported_shape(self):
         out = self._analyze([
             _bash_use("a", "d7y initiatives list --root /ws --json", 1),
-            _tool_result("a", '{"version":1,"valid":true}', index=2),
-            _tool_result("a", '{"version":1,"valid":true}', index=3),
+            _tool_result("a", _ok_result(), index=2),
+            _tool_result("a", _ok_result(), index=3),
         ])
         self.assertFalse(out["shape_supported"])
 
@@ -704,9 +761,55 @@ class TestD7YCommandAnalysis(unittest.TestCase):
     def test_invalid_result_shape(self):
         out = self._analyze([
             _bash_use("a", "d7y initiatives check --root /ws --json", 1),
-            _tool_result("a", '{"version":1,"valid":false}', index=2),
+            _tool_result("a", json.dumps({"version": 1, "root": "/ws", "valid": False,
+                                          "count": 0, "errors": [], "warnings": [], "initiatives": []}), index=2),
         ])
         self.assertEqual(out["check"]["class"], "invalid_result")
+
+
+class TestD7YResultShape(unittest.TestCase):
+    WS = "/ws"
+
+    def _v(self, obj):
+        return run_eval._validate_d7y_result(obj, self.WS)
+
+    def _complete(self, **over):
+        obj = {"version": 1, "root": "/ws", "valid": True, "count": 0,
+               "errors": [], "warnings": [], "initiatives": []}
+        obj.update(over)
+        return obj
+
+    def test_complete_valid(self):
+        self.assertTrue(self._v(self._complete())[0])
+
+    def test_missing_root(self):
+        obj = self._complete(); del obj["root"]
+        self.assertFalse(self._v(obj)[0])
+
+    def test_wrong_root(self):
+        self.assertFalse(self._v(self._complete(root="/other"))[0])
+
+    def test_missing_count(self):
+        obj = self._complete(); del obj["count"]
+        self.assertFalse(self._v(obj)[0])
+
+    def test_boolean_count(self):
+        self.assertFalse(self._v(self._complete(count=True))[0])
+
+    def test_non_list_errors(self):
+        self.assertFalse(self._v(self._complete(errors="x"))[0])
+
+    def test_non_list_warnings(self):
+        self.assertFalse(self._v(self._complete(warnings="x"))[0])
+
+    def test_non_list_initiatives(self):
+        self.assertFalse(self._v(self._complete(initiatives="x"))[0])
+
+    def test_valid_false(self):
+        self.assertFalse(self._v(self._complete(valid=False))[0])
+
+    def test_minimal_shape_rejected(self):
+        self.assertFalse(self._v({"version": 1, "valid": True})[0])
 
 
 class TestRedactionUnit(unittest.TestCase):
@@ -1166,6 +1269,29 @@ class TestPublicCLI(unittest.TestCase):
         proc_assertion = next(a for a in checks["with_skill_assertions"]
                               if a["id"] == "runs-checker-before-and-after")
         self.assertEqual(proc_assertion["status"], "ungradable", proc_assertion)
+
+    # -- D7Y evidence contract: only the exact complete trace is gradable ----
+
+    def test_process_assertion_d7y_contract(self):
+        cases = {
+            "complete": "pass",          # exact list then check, complete results
+            "minimal": "ungradable",     # minimal result JSON rejected
+            "missing-fields": "ungradable",  # missing count field
+            "extra-correlated": "ungradable",  # extra Bash command WITH a result
+            "none": "ungradable",        # no d7y commands, only unrelated tool results
+            "reversed": "fail",          # valid commands in reversed order
+        }
+        for variant, expected in cases.items():
+            fake = make_process_trace_fake(self.tmp, variant)
+            output = self.tmp / f"out-proc-{variant}"
+            proc = run_cli(self.repo, "skills/starting-initiatives/evals/evals.json",
+                           "start-new-initiative", output, claude=fake,
+                           user_settings=make_user_settings(self.tmp))
+            checks = json.loads((output / "checks.json").read_text())
+            proc_assertion = next(a for a in checks["with_skill_assertions"]
+                                  if a["id"] == "runs-checker-before-and-after")
+            self.assertEqual(proc_assertion["status"], expected,
+                             f"{variant}: expected {expected}, got {proc_assertion}")
 
     # -- correction 5: independent-checker exceptions are contained ----------
 

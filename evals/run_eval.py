@@ -188,14 +188,6 @@ SUPPORTED_ASSERTION_IDS = {
     "creates-no-initiative",
     "creates-no-duplicate",
 }
-# Per-command correlation classes that make success unconfirmable (ungradable).
-D7Y_AMBIGUOUS_CLASSES = {
-    "missing_result",
-    "ambiguous_result",
-    "result_before_use",
-    "unparseable",
-    "invalid_result",
-}
 
 
 # ---------------------------------------------------------------------------
@@ -1235,15 +1227,30 @@ def _starts_d7y_verb(tokens: list[str], verb: str) -> bool:
 
 
 def _validate_d7y_result(parsed: Any, workspace: str) -> tuple[bool, str | None]:
+    """Require the complete installed D7Y result shape, exactly.
+
+    A successful agent-produced list/check result must be:
+    ``{"version": 1, "root": <workspace>, "valid": true, "count": <int>,
+    "errors": [], "warnings": [], "initiatives": []}``. A minimal
+    ``{"version": 1, "valid": true}`` is rejected.
+    """
     if not isinstance(parsed, dict):
         return False, "result is not a JSON object"
-    if parsed.get("version") != 1:
-        return False, "result version is not 1"
+    if type(parsed.get("version")) is not int or parsed.get("version") != 1:
+        return False, "result version is not integer 1"
+    root = parsed.get("root")
+    if not isinstance(root, str) or not root or root != workspace:
+        return False, "result root missing or does not match workspace"
     if parsed.get("valid") is not True:
         return False, "result valid is not true"
-    root = parsed.get("root")
-    if root is not None and root != workspace:
-        return False, "result root does not match workspace"
+    if type(parsed.get("count")) is not int:
+        return False, "result count is not an integer"
+    if not isinstance(parsed.get("errors"), list):
+        return False, "result errors is not a list"
+    if not isinstance(parsed.get("warnings"), list):
+        return False, "result warnings is not a list"
+    if not isinstance(parsed.get("initiatives"), list):
+        return False, "result initiatives is not a list"
     return True, None
 
 
@@ -1710,20 +1717,23 @@ def evaluate_assertion(
         ca = with_skill.command_analysis
         if not ca.get("shape_supported"):
             return CHECK_UNGRADABLE, "stream shape absent/ambiguous/unsupported"
+        if ca.get("extra_bash_count", 0) != 0:
+            return CHECK_UNGRADABLE, "extra/unrelated Bash commands present"
         lst = ca.get("list", {}) or {}
         chk = ca.get("check", {}) or {}
-        if (
-            lst.get("class") == "ok" and chk.get("class") == "ok"
-            and ca.get("order_ok") and ca.get("extra_bash_count", 0) == 0
-        ):
-            return CHECK_PASS, "exact d7y list then check observed with valid results"
-        if lst.get("class") in D7Y_AMBIGUOUS_CLASSES or chk.get("class") in D7Y_AMBIGUOUS_CLASSES:
-            return CHECK_UNGRADABLE, "d7y command success unconfirmable"
-        return CHECK_FAIL, (
-            f"missing/invalid/extra d7y command evidence "
-            f"(list={lst.get('class')}, check={chk.get('class')}, "
-            f"order={ca.get('order_ok')}, extra={ca.get('extra_bash_count')})"
-        )
+        lst_cls = lst.get("class")
+        chk_cls = chk.get("class")
+        # Only a correctly-shaped command with a delivered result is gradable
+        # beyond this point; anything else is a structurally unsupported trace.
+        gradable = {"ok", "error"}
+        if lst_cls not in gradable or chk_cls not in gradable:
+            return CHECK_UNGRADABLE, "incomplete or unsupported d7y command trace"
+        # Explicit observed failures remain deterministic fails.
+        if lst_cls == "error" or chk_cls == "error":
+            return CHECK_FAIL, "a d7y command result reported an error"
+        if not ca.get("order_ok"):
+            return CHECK_FAIL, "d7y check preceded list"
+        return CHECK_PASS, "exact d7y list then check observed with complete valid results"
 
     if aid == "creates-one-initiative":
         created = count_initiatives_created(changes)
