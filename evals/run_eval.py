@@ -768,19 +768,16 @@ def count_initiatives_created(changes: dict[str, Any]) -> int:
 def sanitize_workspace(workspace: Path, tokens: list[str]) -> None:
     """Scrub every retained runtime-workspace entry safely before finalization.
 
-    Regular files are rewritten with redacted content; symlinks (whose targets
-    are not content and may encode a secret path) are removed. The structured
-    workspace snapshot records hashes, not content, and is therefore safe.
+    Regular files are rewritten with redacted content; entries whose basename
+    contains a redaction token are renamed; symlinks (whose targets are not
+    content and may encode a secret path) are removed. The structured workspace
+    snapshot records hashes, not content or raw targets, and is therefore safe.
     """
+    active = [t for t in tokens if t]
+
+    # Pass 1: redact file contents; remove every symlink.
     for dirpath, dirnames, filenames in os.walk(workspace):
-        for name in list(dirnames):
-            full = Path(dirpath) / name
-            if full.is_symlink():
-                try:
-                    full.unlink()
-                except OSError:
-                    pass
-        for name in filenames:
+        for name in list(filenames):
             full = Path(dirpath) / name
             if full.is_symlink():
                 try:
@@ -793,9 +790,38 @@ def sanitize_workspace(workspace: Path, tokens: list[str]) -> None:
             except OSError:
                 continue
             try:
-                full.write_text(redact_text(text, tokens), encoding="utf-8")
+                full.write_text(redact_text(text, active), encoding="utf-8")
             except OSError:
                 pass
+        for name in list(dirnames):
+            full = Path(dirpath) / name
+            if full.is_symlink():
+                try:
+                    full.unlink()
+                except OSError:
+                    pass
+
+    # Pass 2: rename files/directories whose basename carries a token (bottom-up).
+    for dirpath, dirnames, filenames in os.walk(workspace, topdown=False):
+        for name in filenames + dirnames:
+            if any(t and t in name for t in active):
+                _rename_redacted(Path(dirpath), name, active)
+
+
+def _rename_redacted(parent: Path, name: str, tokens: list[str]) -> None:
+    new_name = redact_text(name, tokens)
+    if new_name == name or not new_name:
+        return
+    src = parent / name
+    dst = parent / new_name
+    counter = 1
+    while dst.exists() or dst.is_symlink():
+        dst = parent / f"{new_name}.redacted{counter}"
+        counter += 1
+    try:
+        os.rename(src, dst)
+    except OSError:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -1224,13 +1250,14 @@ def _validate_d7y_result(parsed: Any, workspace: str) -> tuple[bool, str | None]
 def analyze_d7y_commands(events: list[dict[str, Any]], workspace: str) -> dict[str, Any]:
     """Exact-tokenized, correlated evidence for the d7y list/check commands.
 
-    Preserves event positions, requires exactly one later non-error tool_result
-    matching each relevant Bash tool_use ID, validates the versioned D7Y result
-    shape, and requires a successful list before a successful check. Duplicate
-    IDs, results preceding uses, missing/ambiguous results, compounds, wrappers,
-    quoted/echoed evidence, wrong roots, and duplicate/missing flags are rejected.
-    Absent/ambiguous/unsupported stream shapes are reported as not
-    ``shape_supported`` and must be graded ``ungradable``.
+    Preserves event positions and requires every Bash ``tool_use`` to correlate
+    with exactly one later ``tool_result`` (no missing, duplicate, ambiguous, or
+    preceding results). Validates the versioned D7Y result shape and requires a
+    successful list before a successful check. Only the exact ordered ``list``
+    then ``check`` commands pass; any extra Bash command fails the process.
+    Compounds, wrappers, quoted/echoed evidence, wrong roots, and
+    duplicate/missing flags are rejected. Absent/ambiguous/unsupported stream
+    shapes are reported as not ``shape_supported`` (graded ``ungradable``).
     """
     bash_uses: list[tuple[int, str | None, str]] = []
     all_use_ids: list[str | None] = []
@@ -1238,18 +1265,33 @@ def analyze_d7y_commands(events: list[dict[str, Any]], workspace: str) -> dict[s
         if block.get("type") != "tool_use":
             continue
         tid = block.get("id")
-        all_use_ids.append(tid if isinstance(tid, str) else None)
+        tid_str = tid if isinstance(tid, str) else None
+        all_use_ids.append(tid_str)
         if block.get("name") == "Bash":
             command = block.get("input", {}).get("command", "")
-            bash_uses.append((index, tid if isinstance(tid, str) else None, command if isinstance(command, str) else ""))
+            bash_uses.append((index, tid_str, command if isinstance(command, str) else ""))
 
     results = _collect_indexed_tool_results(events)
     use_id_counts = Counter(tid for tid in all_use_ids if tid is not None)
     result_id_counts = Counter(tid for _, tid, _, _ in results)
     duplicate_use_ids = sorted(i for i, c in use_id_counts.items() if c > 1)
     duplicate_result_ids = sorted(i for i, c in result_id_counts.items() if c > 1)
+
+    # Every Bash tool_use must correlate with exactly one later tool_result.
+    uncorrelated: list[str] = []
+    for use_index, tid, _command in bash_uses:
+        if tid is None:
+            uncorrelated.append("<no-id>")
+            continue
+        matched = [ri for ri, rid, _is_error, _text in results if rid == tid and ri > use_index]
+        if len(matched) != 1:
+            uncorrelated.append(tid)
+
     shape_supported = (
-        len(results) > 0 and not duplicate_use_ids and not duplicate_result_ids
+        len(results) > 0
+        and not duplicate_use_ids
+        and not duplicate_result_ids
+        and not uncorrelated
     )
 
     def classify(verb: str) -> dict[str, Any]:
@@ -1305,14 +1347,20 @@ def analyze_d7y_commands(events: list[dict[str, Any]], workspace: str) -> dict[s
 
     list_rec = classify("list")
     check_rec = classify("check")
-    order_ok = (
-        list_rec["event_index"] is not None
-        and check_rec["event_index"] is not None
-        and list_rec["event_index"] < check_rec["event_index"]
-    )
+    list_idx = list_rec["event_index"]
+    check_idx = check_rec["event_index"]
+    order_ok = list_idx is not None and check_idx is not None and list_idx < check_idx
+    # Count Bash commands that are not exactly list or check (extra/unrelated).
+    exact_indices = {list_idx, check_idx}
+    extra_bash_count = sum(1 for index, _tid, command in bash_uses
+                           if index not in exact_indices
+                           or not _exact_d7y(command, workspace))
     return {
         "shape_supported": shape_supported,
         "tool_result_count": len(results),
+        "bash_use_count": len(bash_uses),
+        "extra_bash_count": extra_bash_count,
+        "uncorrelated_bash_ids": uncorrelated,
         "workspace": workspace,
         "duplicate_tool_use_ids": duplicate_use_ids,
         "duplicate_result_ids": duplicate_result_ids,
@@ -1320,6 +1368,13 @@ def analyze_d7y_commands(events: list[dict[str, Any]], workspace: str) -> dict[s
         "check": check_rec,
         "order_ok": order_ok,
     }
+
+
+def _exact_d7y(command: str, workspace: str) -> bool:
+    tokens = tokenize_simple_command(command)
+    if tokens is None:
+        return False
+    return _valid_d7y_tokens(tokens, "list", workspace) or _valid_d7y_tokens(tokens, "check", workspace)
 
 
 def _walk_strings(obj: Any):
@@ -1418,24 +1473,46 @@ def validate_arm_events(
     if tools != EXPECTED_TOOLS:
         errors.append(f"init tools {tools!r} != {EXPECTED_TOOLS!r}")
 
-    # Exact accounted skill sets.
-    skills = init.get("skills", []) or []
-    skills_str = [s for s in skills if isinstance(s, str)]
+    # Exact accounted skill sets; reject any non-string skill entry.
+    skills = init.get("skills", [])
+    if not isinstance(skills, list):
+        errors.append("init skills not a list")
+        skills_str = []
+    else:
+        skills_str = []
+        for s in skills:
+            if not isinstance(s, str):
+                errors.append(f"non-string skill entry: {s!r}")
+            else:
+                skills_str.append(s)
     expected_skills = {target, BUILT_IN_SKILL} if with_skill else {BUILT_IN_SKILL}
     if set(skills_str) != expected_skills:
         errors.append(
             f"init skills {sorted(set(skills_str))!r} != {sorted(expected_skills)!r}"
         )
 
-    # Exactly one structurally valid expected plugin, no extras/malformed.
+    # Exactly one structurally valid expected plugin with name/path/version.
     plugins = init.get("plugins", [])
     plugin_ok = False
     if isinstance(plugins, list) and len(plugins) == 1:
         only = plugins[0]
-        if isinstance(only, dict) and only.get("name") == expected_plugin:
-            plugin_ok = True
+        if not isinstance(only, dict):
+            errors.append(f"plugin entry not an object: {only!r}")
         else:
-            errors.append(f"plugin entry malformed or wrong: {only!r}")
+            pname = only.get("name")
+            ppath = only.get("path")
+            pversion = only.get("version")
+            if not isinstance(pname, str) or pname != expected_plugin:
+                errors.append(f"plugin name missing/wrong: {pname!r}")
+            if not isinstance(ppath, str) or not ppath:
+                errors.append("plugin path missing or not a non-empty string")
+            if not isinstance(pversion, str) or not pversion:
+                errors.append("plugin version missing or not a non-empty string")
+            plugin_ok = (
+                isinstance(pname, str) and pname == expected_plugin
+                and isinstance(ppath, str) and ppath
+                and isinstance(pversion, str) and pversion
+            )
     else:
         errors.append(f"expected exactly one plugin {expected_plugin!r}, got {plugins!r}")
 
@@ -1463,7 +1540,8 @@ def validate_arm_events(
         for field_name, expected_type in REQUIRED_RESULT_FIELDS.items():
             if field_name not in result:
                 errors.append(f"result missing required field {field_name!r}")
-            elif not isinstance(result[field_name], expected_type):
+            # Strict type identity (so a bool cannot satisfy an int field).
+            elif type(result[field_name]) is not expected_type:
                 errors.append(f"result field {field_name!r} has wrong type")
         # Canonical modelUsage entry metadata shape.
         usage = result.get("modelUsage")
@@ -1522,7 +1600,9 @@ def run_independent_checker(
             text=True,
             check=False,
         )
-    except OSError as exc:
+    except Exception as exc:
+        # Any checker exception (spawn failure, decode error, etc.) is recorded
+        # so it can never skip arm finalization or suppress baseline evidence.
         return {"argv": argv, "exit_code": None, "stdout": "", "stderr": str(exc),
                 "parsed": None, "valid": False, "state": "checker_error"}
     parsed = None
@@ -1632,13 +1712,17 @@ def evaluate_assertion(
             return CHECK_UNGRADABLE, "stream shape absent/ambiguous/unsupported"
         lst = ca.get("list", {}) or {}
         chk = ca.get("check", {}) or {}
-        if lst.get("class") == "ok" and chk.get("class") == "ok" and ca.get("order_ok"):
+        if (
+            lst.get("class") == "ok" and chk.get("class") == "ok"
+            and ca.get("order_ok") and ca.get("extra_bash_count", 0) == 0
+        ):
             return CHECK_PASS, "exact d7y list then check observed with valid results"
         if lst.get("class") in D7Y_AMBIGUOUS_CLASSES or chk.get("class") in D7Y_AMBIGUOUS_CLASSES:
             return CHECK_UNGRADABLE, "d7y command success unconfirmable"
         return CHECK_FAIL, (
-            f"missing/invalid d7y command evidence "
-            f"(list={lst.get('class')}, check={chk.get('class')}, order={ca.get('order_ok')})"
+            f"missing/invalid/extra d7y command evidence "
+            f"(list={lst.get('class')}, check={chk.get('class')}, "
+            f"order={ca.get('order_ok')}, extra={ca.get('extra_bash_count')})"
         )
 
     if aid == "creates-one-initiative":

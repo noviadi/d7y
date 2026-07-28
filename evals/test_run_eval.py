@@ -370,6 +370,13 @@ def make_redaction_fake(tmp: Path) -> Path:
         "        '### Evidence', '', 'None.', '', '### Assumptions', '', 'X.', '',\n"
         "        '## Current state', '', 'X.', '']\n"
         "    open(os.path.join(_idir, 'initiative.md'), 'w').write('\\n'.join(_lines))\n"
+        # secret in a retained filename and in a symlink target.
+        "    if _root:\n"
+        "        open(os.path.join(_root, _secret + '.md'), 'w').write('named after secret')\n"
+        "        try:\n"
+        "            os.symlink('/tmp/' + _secret + '-target', os.path.join(_root, _secret + '.link'))\n"
+        "        except OSError:\n"
+        "            pass\n"
         "print(json.dumps({'type': 'result', 'subtype': 'success', 'result': 'final ' + _secret,\n"
         "    'is_error': False, 'num_turns': 4, 'permission_denials': [],\n"
         "    'modelUsage': {'claude-sonnet-5': {'provider': 'firstParty', 'canonicalModel': 'claude-sonnet-5'}}}))\n"
@@ -379,7 +386,7 @@ def make_redaction_fake(tmp: Path) -> Path:
 
 
 def make_canary_leak_fake(tmp: Path, channel: str) -> Path:
-    sig = run_eval.PROJECT_INSTRUCTION_SIGNAL
+    sig = CANARY_SIGNAL
     siglit = repr(sig)
     base = (
         "import glob as _glob\n"
@@ -629,13 +636,35 @@ class TestD7YCommandAnalysis(unittest.TestCase):
         ])
         self.assertEqual(out["list"]["class"], "not_attempted")
 
-    def test_absent_result_is_ambiguous(self):
+    def test_unmatched_bash_use_unsupported_shape(self):
+        # A Bash tool_use without exactly one later matching result is uncorrelated.
         out = self._analyze([
             _bash_use("a", "d7y initiatives list --root /ws --json", 1),
             _tool_result("other", "{}", index=2),
         ])
+        self.assertFalse(out["shape_supported"])
+        self.assertIn("a", out["uncorrelated_bash_ids"])
+
+    def test_extra_bash_without_result_unsupported_shape(self):
+        out = self._analyze([
+            _bash_use("a", "d7y initiatives list --root /ws --json", 1),
+            _bash_use("z", "ls", 2),
+            _tool_result("a", '{"version":1,"valid":true}', index=3),
+        ])
+        self.assertFalse(out["shape_supported"])
+        self.assertIn("z", out["uncorrelated_bash_ids"])
+
+    def test_extra_bash_with_result_counted(self):
+        out = self._analyze([
+            _bash_use("a", "d7y initiatives list --root /ws --json", 1),
+            _bash_use("b", "d7y initiatives check --root /ws --json", 2),
+            _bash_use("z", "ls", 3),
+            _tool_result("a", '{"version":1,"valid":true}', index=4),
+            _tool_result("b", '{"version":1,"valid":true}', index=5),
+            _tool_result("z", "out", index=6),
+        ])
         self.assertTrue(out["shape_supported"])
-        self.assertEqual(out["list"]["class"], "missing_result")
+        self.assertEqual(out["extra_bash_count"], 1)
 
     def test_error_result(self):
         out = self._analyze([
@@ -722,8 +751,8 @@ class TestValidateArmEvents(unittest.TestCase):
             "type": "system", "subtype": "init", "session_id": "s1",
             "tools": run_eval.EXPECTED_TOOLS, "model": run_eval.EXPECTED_MODEL,
             "skills": ["d7y-eval-session:starting-initiatives", "doctor"],
-            "plugins": [{"name": "d7y-eval-session"}], "mcp_servers": [],
-            "permissionMode": "dontAsk",
+            "plugins": [{"name": "d7y-eval-session", "path": "/p", "version": "0.0.1"}],
+            "mcp_servers": [], "permissionMode": "dontAsk",
         }
         init.update(overrides.get("init", {}))
         result = {
@@ -746,6 +775,11 @@ class TestValidateArmEvents(unittest.TestCase):
     def test_valid_with_skill_exact_set(self):
         self.assertTrue(self._validate(self._events()).ok)
 
+    def test_nonstring_skill_rejected(self):
+        events = self._events(init={"skills": [
+            "d7y-eval-session:starting-initiatives", "doctor", 5]})
+        self.assertFalse(self._validate(events).ok)
+
     def test_extra_skill_rejected(self):
         self.assertFalse(self._validate(self._events(init={"skills": [
             "d7y-eval-session:starting-initiatives", "doctor", "extra"]})).ok)
@@ -756,7 +790,22 @@ class TestValidateArmEvents(unittest.TestCase):
 
     def test_duplicate_plugin_rejected(self):
         events = self._events(init={"plugins": [
-            {"name": "d7y-eval-session"}, {"name": "d7y-eval-session"}]})
+            {"name": "d7y-eval-session", "path": "/p", "version": "0.0.1"},
+            {"name": "d7y-eval-session", "path": "/p", "version": "0.0.1"}]})
+        self.assertFalse(self._validate(events).ok)
+
+    def test_malformed_plugin_missing_path_rejected(self):
+        events = self._events(init={"plugins": [{"name": "d7y-eval-session", "version": "0.0.1"}]})
+        self.assertFalse(self._validate(events).ok)
+
+    def test_malformed_plugin_bad_version_type_rejected(self):
+        events = self._events(init={"plugins": [
+            {"name": "d7y-eval-session", "path": "/p", "version": 1}]})
+        self.assertFalse(self._validate(events).ok)
+
+    def test_num_turns_bool_rejected(self):
+        # A bool must not satisfy the integer num_turns field.
+        events = self._events(result={"num_turns": True})
         self.assertFalse(self._validate(events).ok)
 
     def test_nonzero_and_none_exit_invalid(self):
@@ -807,12 +856,42 @@ class TestStagingSafety(unittest.TestCase):
                 [("evals/files/customer-interview-analysis.md", "settings.json")], ws)
 
 
+# Independent authoritative inventory lists (not imported from production), so
+# behavioral tests compare against a self-contained contract.
+EXPECTED_ARM_ARTIFACTS = (
+    "trace.jsonl",
+    "stderr.txt",
+    "process.json",
+    "provenance.json",
+    "final-response.txt",
+    "telemetry.json",
+    "command-events.json",
+    "checker.json",
+    "workspace-changes.json",
+    "workspace-snapshot.json",
+    "selected-objects.json",
+    "validation.json",
+    "arm-summary.json",
+)
+EXPECTED_TOP_LEVEL_ARTIFACTS = (
+    "manifest.json",
+    "checks.json",
+    "summary.md",
+    "source-status.json",
+)
+
+# Project-instruction canary signal as an independent literal contract value
+# (the production canary writes the same token; behavioral fakes must not import
+# it from evals.run_eval).
+CANARY_SIGNAL = "D7Y-EVAL-INSTRUCTION-CANARY-SIGNAL-7Q"
+
+
 def _assert_complete_inventory(test: unittest.TestCase, output: Path) -> None:
     for arm in ("with-skill", "baseline"):
-        for name in run_eval.ARM_ARTIFACTS:
+        for name in EXPECTED_ARM_ARTIFACTS:
             test.assertTrue((output / arm / "artifacts" / name).exists(),
                             f"missing {arm}/{name}")
-    for name in run_eval.TOP_LEVEL_ARTIFACTS:
+    for name in EXPECTED_TOP_LEVEL_ARTIFACTS:
         test.assertTrue((output / name).exists(), f"missing top-level {name}")
 
 
@@ -993,13 +1072,19 @@ class TestPublicCLI(unittest.TestCase):
         # Captured CLI stdout/stderr diagnostics never carry the value.
         self.assertNotIn(secret, proc.stdout)
         self.assertNotIn(secret, proc.stderr)
-        # Every persisted output entry (including retained workspaces) is clean.
+        # Every persisted output entry is clean: file contents, every path
+        # component (filenames and directory names), and symlink targets.
         leaked = []
         for p in output.rglob("*"):
+            rel = str(p)
+            if secret in rel:
+                leaked.append(("path", rel))
+            if p.is_symlink() and secret in os.readlink(p):
+                leaked.append(("symlink-target", rel))
             if p.is_file():
                 try:
                     if secret in p.read_text(errors="ignore"):
-                        leaked.append(str(p))
+                        leaked.append(("content", rel))
                 except OSError:
                     continue
         self.assertEqual(leaked, [], f"secret leaked in: {leaked}")
@@ -1009,6 +1094,8 @@ class TestPublicCLI(unittest.TestCase):
         # Redaction markers present where a value was scrubbed.
         self.assertIn("<redacted>", (output / "with-skill" / "artifacts" / "trace.jsonl").read_text())
         self.assertIn("<redacted>", (output / "with-skill" / "artifacts" / "checker.json").read_text())
+        # The secret-named file was renamed and the secret symlink removed.
+        self.assertFalse((output / "with-skill" / "workspace" / (secret + ".md")).exists())
 
     # -- correction 6: canary leakage across channels -----------------------
 
@@ -1038,6 +1125,75 @@ class TestPublicCLI(unittest.TestCase):
             self.assertEqual(checks["pair_validity"]["status"], "fail",
                              f"{corruption}: {checks['pair_validity']}")
             _assert_complete_inventory(self, output)
+
+    # -- correction 2: every Bash tool_use must correlate --------------------
+
+    def test_extra_bash_use_lacking_result_blocks(self):
+        behavior = (
+            "import glob as _glob\n"
+            "_matches = _glob.glob(os.path.join(_plugin or '', 'skills', '*', 'SKILL.md')) if _plugin else []\n"
+            "_has_skill = bool(_matches)\n"
+            "_skill_name = os.path.basename(os.path.dirname(_matches[0])) if _matches else None\n"
+            "_target = ('d7y-eval-session:' + _skill_name) if _has_skill else None\n"
+            "_skills = [_target, 'doctor'] if _has_skill else ['doctor']\n"
+            "_pname = 'd7y-eval-session' if _has_skill else 'd7y-eval-control'\n"
+            "_sid = 'extra-' + str(os.getpid())\n"
+            "print(json.dumps({'type': 'system', 'subtype': 'init', 'session_id': _sid, "
+            "'tools': ['Skill', 'Read', 'Write', 'Edit', 'Bash'], 'model': 'claude-sonnet-5', "
+            "'skills': _skills, 'plugins': [{'name': _pname, 'path': _plugin or '', 'version': '0.0.1'}], "
+            "'mcp_servers': [], 'permissionMode': 'dontAsk'}))\n"
+            "if _has_skill and _root:\n"
+            "    for _cmd, _id in [('d7y initiatives list --root ' + _root + ' --json', 'c2'), "
+            "('d7y initiatives check --root ' + _root + ' --json', 'c3'), ('ls', 'c4')]:\n"
+            "        print(json.dumps({'type': 'assistant', 'message': {'role': 'assistant', 'model': 'glm-4.7',\n"
+            "            'content': [{'type': 'tool_use', 'id': _id, 'name': 'Bash', 'input': {'command': _cmd}}]}}))\n"
+            "    print(json.dumps({'type': 'user', 'message': {'role': 'user', 'content': [{'type': 'tool_result',\n"
+            "        'tool_use_id': 'c2', 'content': '{\"version\":1,\"root\":\"' + _root + '\",\"valid\":true}', 'is_error': False}]}}))\n"
+            "    print(json.dumps({'type': 'user', 'message': {'role': 'user', 'content': [{'type': 'tool_result',\n"
+            "        'tool_use_id': 'c3', 'content': '{\"version\":1,\"root\":\"' + _root + '\",\"valid\":true}', 'is_error': False}]}}))\n"
+            "    # c4 (extra Bash) intentionally has NO tool_result.\n"
+            "print(json.dumps({'type': 'result', 'subtype': 'success', 'result': 'ok', 'is_error': False, "
+            "'num_turns': 5, 'permission_denials': [], "
+            "'modelUsage': {'claude-sonnet-5': {'provider': 'firstParty', 'canonicalModel': 'claude-sonnet-5'}}}))\n"
+            "sys.exit(0)\n"
+        )
+        fake = _write_fake(self.tmp, "extra-bash", behavior)[0]
+        output = self.tmp / "out"
+        proc = run_cli(self.repo, "skills/starting-initiatives/evals/evals.json",
+                       "start-new-initiative", output, claude=fake,
+                       user_settings=make_user_settings(self.tmp))
+        checks = json.loads((output / "checks.json").read_text())
+        proc_assertion = next(a for a in checks["with_skill_assertions"]
+                              if a["id"] == "runs-checker-before-and-after")
+        self.assertEqual(proc_assertion["status"], "ungradable", proc_assertion)
+
+    # -- correction 5: independent-checker exceptions are contained ----------
+
+    def test_checker_exception_contained(self):
+        # Replace the committed d7y so `initiatives check` emits invalid UTF-8,
+        # forcing a decode exception inside run_independent_checker.
+        broken = self.repo / "d7y"
+        broken.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = \"initiatives\" ] && [ \"$2\" = \"check\" ]; then\n"
+            "  printf '\\xff\\xfe'\n"
+            "  exit 0\n"
+            "fi\n"
+            "exit 0\n"
+        )
+        broken.chmod(0o755)
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "commit", "-m", "broken-d7y")
+        fake, _log = make_positive_fake(self.tmp)
+        output = self.tmp / "out"
+        proc = run_cli(self.repo, "skills/starting-initiatives/evals/evals.json",
+                       "start-new-initiative", output, claude=fake,
+                       user_settings=make_user_settings(self.tmp))
+        # The checker exception must be contained: full inventory still emitted.
+        _assert_complete_inventory(self, output)
+        checker = json.loads((output / "with-skill" / "artifacts" / "checker.json").read_text())
+        self.assertEqual(checker["state"], "checker_error")
+        self.assertFalse(checker["valid"])
 
     # -- correction 7: same complete inventory for every failure outcome ----
 
