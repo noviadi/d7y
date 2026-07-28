@@ -3,8 +3,8 @@
 
 Executes one selected case in paired with-skill and no-skill configurations,
 captures raw evidence, applies a small fixed set of trusted deterministic
-checks, and writes a complete, source-free artifact tree. This is D7Y
-contributor infrastructure for the eval-execution-harness plan, not a top-level
+checks, and writes a complete, redacted artifact tree. This is D7Y contributor
+infrastructure for the eval-execution-harness plan, not a top-level
 ``d7y eval`` capability.
 
 Public entry point:
@@ -20,9 +20,15 @@ to the agent, and is snapshotted before and after every exit path.
 The target workspace is bound through the supported Claude command surface only:
 each arm starts in a distinct process directory and receives the unchanged case
 prompt wrapped in identical neutral harness instructions that name that arm's
-absolute target workspace and require D7Y commands to use
-``--root <absolute workspace>``. There is no top-level Claude ``--root`` flag
-(Claude Code 2.1.218 does not declare one).
+absolute target workspace and require every D7Y command, if the agent chooses
+to invoke one, to include ``--root <absolute workspace>``. The wrapper never
+tells the agent which D7Y command to run, in what order, or to create any state,
+so no later skill-process evidence is injected by the harness. There is no
+top-level Claude ``--root`` flag (Claude Code 2.1.218 does not declare one).
+
+Imported environment values are kept only as child-process inputs and redaction
+tokens and are recursively scrubbed from every persisted artifact, diagnostic,
+and retained runtime workspace.
 """
 
 from __future__ import annotations
@@ -41,6 +47,7 @@ import sys
 import tempfile
 import threading
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -53,12 +60,11 @@ from validate_skill_evals import validate_suite_data
 
 CLAUDE_VERSION = "2.1.218"
 EXPECTED_MODEL = "claude-sonnet-5"
-# Permitted routed assistant model under this user's z.ai routing. Canonical /
-# requested model stays claude-sonnet-5; routed assistant events may identify
-# one of these and must not be rejected as a mismatch. Do not widen this set
-# without committed capability evidence or an explicit live-qualification
+# Routed assistant models supported by committed capability evidence: the
+# canonical requested model plus the one routed model the spike observed. Do not
+# widen this set without committed evidence or an explicit live-qualification
 # return.
-ROUTED_MODELS = {"claude-sonnet-5", "glm-4.7", "glm-4.6"}
+ROUTED_MODELS = {"claude-sonnet-5", "glm-4.7"}
 EXPECTED_PERMISSION_MODE = "dontAsk"
 EXPECTED_TOOLS = ["Skill", "Read", "Write", "Edit", "Bash"]
 EXPECTED_TOOLS_ARG = ",".join(EXPECTED_TOOLS)
@@ -69,9 +75,13 @@ CONTROL_PLUGIN_NAME = "d7y-eval-control"
 PLUGIN_VERSION = "0.0.1"
 BUILT_IN_SKILL = "doctor"
 
+# This first runner slice supports only the starting-initiatives skill.
+SUPPORTED_SKILL_NAME = "starting-initiatives"
+
 # Namespaced target: <plugin>:<skill>. Only an exact match counts.
 def expected_target(skill_name: str) -> str:
     return f"{SESSION_PLUGIN_NAME}:{skill_name}"
+
 
 DEFAULT_TIMEOUT_SECONDS = 600.0
 ESCALATION_SECONDS = 5.0
@@ -89,21 +99,23 @@ REQUIRED_RESULT_FIELDS: dict[str, type | tuple[type, ...]] = {
 # claims to suppress and are never passed as positive agent input.
 PROJECT_INSTRUCTION_CANARY = "D7Y-EVAL-PROJECT-INSTRUCTION-SUPPRESSION-CANARY"
 # Observable signal the project-instruction canary would emit if its instructions
-# were loaded. Detection scans every event/result channel for this token.
+# were loaded. Detection recursively scans every event/result string for it.
 PROJECT_INSTRUCTION_SIGNAL = "D7Y-EVAL-INSTRUCTION-CANARY-SIGNAL-7Q"
 FAKE_GLOBAL_SKILL_NAME = "d7y-eval-fake-global-skill"
 GLOBAL_SKILL_CANARY = "D7Y-EVAL-GLOBAL-SKILL-SUPPRESSION-CANARY"
+# Strings whose presence anywhere in parsed event content indicates leakage.
+CANARY_MARKERS = (PROJECT_INSTRUCTION_CANARY, PROJECT_INSTRUCTION_SIGNAL, GLOBAL_SKILL_CANARY)
 
 # Neutral harness instructions appended to the unchanged case prompt. The target
-# workspace appears exactly here and nowhere else in the command surface.
+# workspace appears exactly here and nowhere else in the command surface. The
+# wrapper is behavior-neutral: it does not name any D7Y command, ordering, or
+# outcome, so it cannot be graded later as skill-process evidence.
 HARNESS_INSTRUCTION_TEMPLATE = (
     "\n\n--- D7Y eval harness instructions (identical across both arms) ---\n"
     "Target workspace root: {workspace}\n"
-    "Operate only within the target workspace root named above. Before proposing "
-    "any initiative, check for an existing match by running exactly "
-    "`d7y initiatives list --root {workspace} --json`. After creating any "
-    "initiative state, validate it by running exactly "
-    "`d7y initiatives check --root {workspace} --json`.\n"
+    "Perform all work inside the target workspace root named above. If you "
+    "choose to invoke any D7Y command, include `--root {workspace}` in that "
+    "command.\n"
 )
 
 # Supported Claude argv surface (everything else is rejected by the strict
@@ -143,6 +155,48 @@ SHELL_CONTROL_CHARS = (";", "&&", "||", "|", "\n", "`", "$(", ">", "<")
 
 REDACTED = "<redacted>"
 
+# The authoritative per-arm artifact inventory; every outcome writes exactly
+# these files. Tests compare each outcome against this list.
+ARM_ARTIFACTS = (
+    "trace.jsonl",
+    "stderr.txt",
+    "process.json",
+    "provenance.json",
+    "final-response.txt",
+    "telemetry.json",
+    "command-events.json",
+    "checker.json",
+    "workspace-changes.json",
+    "workspace-snapshot.json",
+    "selected-objects.json",
+    "validation.json",
+    "arm-summary.json",
+)
+TOP_LEVEL_ARTIFACTS = (
+    "manifest.json",
+    "checks.json",
+    "summary.md",
+    "source-status.json",
+)
+
+# Exactly supported deterministic assertion IDs. Dispatch is by exact ID only.
+SUPPORTED_ASSERTION_IDS = {
+    "invokes-starting-skill",
+    "does-not-invoke",
+    "runs-checker-before-and-after",
+    "creates-one-initiative",
+    "creates-no-initiative",
+    "creates-no-duplicate",
+}
+# Per-command correlation classes that make success unconfirmable (ungradable).
+D7Y_AMBIGUOUS_CLASSES = {
+    "missing_result",
+    "ambiguous_result",
+    "result_before_use",
+    "unparseable",
+    "invalid_result",
+}
+
 
 # ---------------------------------------------------------------------------
 # Errors.
@@ -151,6 +205,51 @@ REDACTED = "<redacted>"
 
 class PreflightError(Exception):
     """A blocking preflight failure. Never carries a secret value."""
+
+
+# ---------------------------------------------------------------------------
+# Recursive redaction.
+# ---------------------------------------------------------------------------
+
+
+def redact_text(text: str, tokens: list[str]) -> str:
+    if not isinstance(text, str):
+        return text
+    out = text
+    for token in tokens:
+        if token:
+            out = out.replace(token, REDACTED)
+    return out
+
+
+def redact_obj(obj: Any, tokens: list[str]) -> Any:
+    """Recursively redact tokens from strings in JSON keys and values."""
+    if isinstance(obj, str):
+        return redact_text(obj, tokens)
+    if isinstance(obj, list):
+        return [redact_obj(item, tokens) for item in obj]
+    if isinstance(obj, dict):
+        return {redact_text(str(key), tokens): redact_obj(value, tokens) for key, value in obj.items()}
+    return obj
+
+
+def collect_env_tokens(path: Path) -> list[str]:
+    """Leniently collect imported env values as redaction tokens.
+
+    Acquired before any strict validation can raise, so a later failure cannot
+    expose an unsanitized value. Never raises.
+    """
+    tokens: list[str] = []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return tokens
+    env = data.get("env") if isinstance(data, dict) else None
+    if isinstance(env, dict):
+        for value in env.values():
+            if isinstance(value, str) and value:
+                tokens.append(value)
+    return tokens
 
 
 # ---------------------------------------------------------------------------
@@ -236,10 +335,9 @@ def source_status(repo: Path) -> str:
 def _symlink_in_chain(path: Path) -> bool:
     """True if ``path`` or any existing parent component is a symlink."""
     try:
-        resolved = path.resolve(strict=False)
+        path.resolve(strict=False)
     except OSError:
         return True
-    # Walk the existing prefix and detect any symlink component.
     candidate = path
     seen: set[Path] = set()
     while candidate not in seen:
@@ -252,16 +350,11 @@ def _symlink_in_chain(path: Path) -> bool:
         if candidate.parent == candidate:
             break
         candidate = candidate.parent
-    return resolved != path and path.is_symlink()
+    return False
 
 
 def verify_output_root(output_dir: Path, source_repo: Path) -> None:
-    """Require a genuinely new, disjoint, non-symlink output path.
-
-    Rejects any existing entry (including an empty directory), a symlink at the
-    output path or in any existing parent component, and overlap with the source
-    repository in either direction.
-    """
+    """Require a genuinely new, disjoint, non-symlink output path."""
     if _symlink_in_chain(output_dir):
         raise PreflightError("output root path traverses a symlink")
     output_abs = output_dir.resolve(strict=False)
@@ -307,24 +400,23 @@ def prevalidate_staging(entries: list[tuple[str, str]], workspace: Path) -> list
 
     Each entry is ``(source_rel_to_skill_dir, destination_rel_to_workspace)``.
     Rejects unsafe paths, control destinations, duplicate or
-    ancestor/descendant-colliding destinations, and overwrites of existing
-    workspace entries. Returns validated ``(destination_path, source)`` pairs.
+    ancestor/descendant-colliding destinations, and overwrites. Returns validated
+    ``(destination_path, source)`` pairs. The workspace need not exist yet.
     """
     seen: dict[Path, str] = {}
     validated: list[tuple[Path, str]] = []
+    ws_resolved = workspace.resolve(strict=False)
     for source, destination in entries:
         src_path = safe_relative_path(source)
         dest_path = safe_relative_path(destination)
         if is_control_destination(dest_path):
             raise PreflightError(f"control-path collision in destination: {destination}")
         resolved = (workspace / dest_path).resolve(strict=False)
-        ws_resolved = workspace.resolve(strict=False)
         try:
             resolved.relative_to(ws_resolved)
         except ValueError:
             raise PreflightError(f"destination escapes workspace: {destination}")
         for prior in seen:
-            # Reject equality and ancestor/descendant collisions (a vs a/b).
             prior_resolved = (workspace / prior).resolve(strict=False)
             try:
                 resolved.relative_to(prior_resolved)
@@ -342,9 +434,6 @@ def prevalidate_staging(entries: list[tuple[str, str]], workspace: Path) -> list
                 pass
         if dest_path in seen:
             raise PreflightError(f"duplicate destination: {destination}")
-        target = workspace / dest_path
-        if target.exists():
-            raise PreflightError(f"destination already exists in workspace: {destination}")
         seen[dest_path] = source
         validated.append((dest_path, src_path.as_posix()))
     return validated
@@ -384,7 +473,6 @@ def load_suite_from_commit(repo: Path, commit: str, suite_repo_path: str) -> dic
     skill_name = data.get("skill_name") if isinstance(data, dict) else None
     if not isinstance(skill_name, str):
         raise PreflightError(f"invalid suite structure at {suite_rel}")
-    # Validate the immutable suite against the committed validator contract.
     errors = validate_suite_data(
         data,
         Path(skill_repo_dir).name,
@@ -404,7 +492,7 @@ def find_case(suite: dict[str, Any], case_id: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Materialization: plugins, settings, capability, canaries, workspace seed.
+# Materialization: plugins, settings, capability, canaries.
 # ---------------------------------------------------------------------------
 
 
@@ -456,13 +544,7 @@ def write_harness_settings(settings_path: Path) -> None:
 
 
 def write_canaries(config_root: Path) -> dict[str, Path]:
-    """Place suppression canaries only in suppressed (global) locations.
-
-    These represent the global skill root and global instructions that the
-    posture (``--setting-sources project`` + ``disableBundledSkills`` +
-    ``includeGitInstructions: false``) must suppress. They are never passed via
-    ``--skill-dir``, environment, prompt, workspace, plugin, or settings.
-    """
+    """Place suppression canaries only in suppressed (global) locations."""
     locations: dict[str, Path] = {}
     skill_dir = config_root / "skills" / FAKE_GLOBAL_SKILL_NAME
     skill_dir.mkdir(parents=True, exist_ok=True)
@@ -502,6 +584,11 @@ def materialize_capability(repo: Path, commit: str, capability_dir: Path) -> dic
     return object_ids
 
 
+# ---------------------------------------------------------------------------
+# Staging: plan (validate, no write) then materialize.
+# ---------------------------------------------------------------------------
+
+
 @dataclass
 class StagedObject:
     destination: str
@@ -509,20 +596,26 @@ class StagedObject:
     object_id: str
 
 
-def stage_workspace_seed(
-    workspace: Path,
+def build_staging_plan(
     *,
     case: dict[str, Any],
     repo: Path,
     commit: str,
     skill_repo_dir: str,
     seed_repo_paths: list[str],
-) -> list[StagedObject]:
-    """Stage the allowlisted repository seed + declared case fixtures."""
+) -> list[tuple[str, str, str]]:
+    """Build and fully validate the staging map without writing.
+
+    Returns a list of ``(repo_rel_source, destination_rel, object_id)`` after
+    checking every immutable object, symlinks, containment, collisions, and
+    control destinations. Raises on any unsafe plan.
+    """
     entries: list[tuple[str, str]] = []
     for seed in seed_repo_paths:
         seed_rel = safe_relative_path(seed).as_posix()
         assert_no_symlink_at(repo, commit, seed_rel)
+        if not git_object_exists(repo, commit, seed_rel):
+            raise PreflightError(f"seed object not found: {seed_rel}")
         entries.append((seed_rel, seed_rel))
     for fixture in case.get("files", []):
         if not isinstance(fixture, dict):
@@ -533,12 +626,34 @@ def stage_workspace_seed(
             raise PreflightError("file fixture requires string source and destination")
         src_rel = (Path(skill_repo_dir) / safe_relative_path(source)).as_posix()
         assert_no_symlink_at(repo, commit, src_rel)
+        if not git_object_exists(repo, commit, src_rel):
+            raise PreflightError(f"fixture object not found: {src_rel}")
         entries.append((src_rel, destination))
+    return [(src, dest, "") for src, dest in entries]
 
-    validated = prevalidate_staging(entries, workspace)
 
+def prevalidate_both_plans(
+    with_skill_entries: list[tuple[str, str, str]],
+    baseline_entries: list[tuple[str, str, str]],
+    with_skill_workspace: Path,
+    baseline_workspace: Path,
+) -> tuple[list[tuple[Path, str]], list[tuple[Path, str]]]:
+    """Validate both workspace maps before writing either."""
+    ws_plan = prevalidate_staging([(s, d) for s, d, _ in with_skill_entries], with_skill_workspace)
+    bl_plan = prevalidate_staging([(s, d) for s, d, _ in baseline_entries], baseline_workspace)
+    return ws_plan, bl_plan
+
+
+def materialize_staging(
+    workspace: Path,
+    plan: list[tuple[Path, str]],
+    repo: Path,
+    commit: str,
+    entries: list[tuple[str, str, str]],
+) -> list[StagedObject]:
+    """Write an already-validated staging plan; record real blob object IDs."""
     staged: list[StagedObject] = []
-    for (dest_path, _src), (repo_rel, _dest) in zip(validated, entries):
+    for (dest_path, _src), (repo_rel, _dest, _oid) in zip(plan, entries):
         blob = git_show(repo, commit, repo_rel)
         object_id = git_blob_id(repo, commit, repo_rel)
         dest_full = workspace / dest_path
@@ -550,39 +665,137 @@ def stage_workspace_seed(
     return staged
 
 
-def hash_workspace(workspace: Path) -> dict[str, str]:
-    """Hash every file currently in the workspace (path -> sha256)."""
-    out: dict[str, str] = {}
-    for path in workspace.rglob("*"):
-        if not path.is_file() or path.is_symlink():
-            continue
-        rel = path.relative_to(workspace).as_posix()
-        out[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
-    return out
-
-
 def verify_workspace_isolation(workspace: Path) -> None:
     """No eval/control/harness material may live in a target workspace."""
-    for path in workspace.rglob("*"):
-        if not path.is_file() or path.is_symlink():
-            continue
-        rel = path.relative_to(workspace).as_posix()
-        name = path.name
-        if name in ("evals.json", "benchmark.json"):
-            raise PreflightError(f"workspace contains eval/control material: {rel}")
-        if name.endswith(".json") and path.parent.name == "graders":
-            raise PreflightError(f"workspace contains grader material: {rel}")
-        if rel.startswith("evals/") or rel.startswith("graders/"):
-            raise PreflightError(f"workspace contains eval/control material: {rel}")
-        if path.stat().st_size < 1_000_000:
+    for dirpath, _dirs, filenames in os.walk(workspace):
+        for name in filenames:
+            path = Path(dirpath) / name
+            rel = path.relative_to(workspace).as_posix()
+            if name in ("evals.json", "benchmark.json"):
+                raise PreflightError(f"workspace contains eval/control material: {rel}")
+            if name.endswith(".json") and path.parent.name == "graders":
+                raise PreflightError(f"workspace contains grader material: {rel}")
+            if rel.startswith("evals/") or rel.startswith("graders/"):
+                raise PreflightError(f"workspace contains eval/control material: {rel}")
+            if path.is_symlink():
+                continue
+            if path.stat().st_size < 1_000_000:
+                try:
+                    text = path.read_text(encoding="utf-8", errors="ignore")
+                except OSError:
+                    continue
+                for marker in CANARY_MARKERS + (FAKE_GLOBAL_SKILL_NAME,):
+                    if marker in text:
+                        raise PreflightError(f"workspace leaked canary content: {rel}")
+
+
+# ---------------------------------------------------------------------------
+# Filesystem snapshot, change detection, and workspace sanitization.
+# ---------------------------------------------------------------------------
+
+
+def snapshot_workspace(workspace: Path) -> dict[str, dict[str, Any]]:
+    """lstat every entry: type, mode, content hash (file) or link-target hash."""
+    entries: dict[str, dict[str, Any]] = {}
+    for dirpath, dirnames, filenames in os.walk(workspace):
+        for name in dirnames + filenames:
+            full = os.path.join(dirpath, name)
+            rel = os.path.relpath(full, str(workspace))
             try:
-                text = path.read_text(encoding="utf-8", errors="ignore")
+                st = os.lstat(full)
             except OSError:
                 continue
-            for marker in (PROJECT_INSTRUCTION_CANARY, GLOBAL_SKILL_CANARY,
-                           FAKE_GLOBAL_SKILL_NAME, PROJECT_INSTRUCTION_SIGNAL):
-                if marker in text:
-                    raise PreflightError(f"workspace leaked canary content: {rel}")
+            mode = oct(st.st_mode & 0o777)
+            if stat.S_ISLNK(st.st_mode):
+                try:
+                    target = os.readlink(full)
+                except OSError:
+                    target = ""
+                entries[rel] = {
+                    "type": "symlink",
+                    "mode": mode,
+                    "link_target_hash": hashlib.sha256(target.encode("utf-8")).hexdigest(),
+                }
+            elif stat.S_ISDIR(st.st_mode):
+                entries[rel] = {"type": "dir", "mode": mode}
+            else:
+                try:
+                    digest = hashlib.sha256(Path(full).read_bytes()).hexdigest()
+                except OSError:
+                    digest = None
+                entries[rel] = {"type": "file", "mode": mode, "content_hash": digest}
+    return entries
+
+
+def compute_workspace_changes(
+    baseline: dict[str, dict[str, Any]], current: dict[str, dict[str, Any]]
+) -> dict[str, Any]:
+    added: list[str] = []
+    modified: list[str] = []
+    deleted: list[str] = []
+    type_changed: list[str] = []
+    for rel, cur in current.items():
+        if rel not in baseline:
+            added.append(rel)
+            continue
+        base = baseline[rel]
+        if base.get("type") != cur.get("type"):
+            type_changed.append(rel)
+        elif cur.get("type") == "file" and base.get("content_hash") != cur.get("content_hash"):
+            modified.append(rel)
+    for rel in baseline:
+        if rel not in current:
+            deleted.append(rel)
+    return {
+        "added": sorted(added),
+        "modified": sorted(modified),
+        "deleted": sorted(deleted),
+        "type_changed": sorted(type_changed),
+        "baseline_count": len(baseline),
+        "current_count": len(current),
+    }
+
+
+def _is_canonical_initiative(rel: str) -> bool:
+    parts = rel.split("/")
+    return len(parts) == 3 and parts[0] == "initiatives" and parts[2] == "initiative.md"
+
+
+def count_initiatives_created(changes: dict[str, Any]) -> int:
+    return sum(1 for rel in changes.get("added", []) if _is_canonical_initiative(rel))
+
+
+def sanitize_workspace(workspace: Path, tokens: list[str]) -> None:
+    """Scrub every retained runtime-workspace entry safely before finalization.
+
+    Regular files are rewritten with redacted content; symlinks (whose targets
+    are not content and may encode a secret path) are removed. The structured
+    workspace snapshot records hashes, not content, and is therefore safe.
+    """
+    for dirpath, dirnames, filenames in os.walk(workspace):
+        for name in list(dirnames):
+            full = Path(dirpath) / name
+            if full.is_symlink():
+                try:
+                    full.unlink()
+                except OSError:
+                    pass
+        for name in filenames:
+            full = Path(dirpath) / name
+            if full.is_symlink():
+                try:
+                    full.unlink()
+                except OSError:
+                    pass
+                continue
+            try:
+                text = full.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            try:
+                full.write_text(redact_text(text, tokens), encoding="utf-8")
+            except OSError:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -635,12 +848,8 @@ def build_child_env(
     process_start_dir: Path,
     capability_dir: Path,
     temp_dir: Path,
-) -> tuple[dict[str, str], dict[str, Any], list[str]]:
-    """Build a scrubbed child environment: import user env first, then override.
-
-    Returns ``(env, provenance, redaction_tokens)`` where redaction_tokens are
-    the imported values that must be scrubbed from every persisted output.
-    """
+) -> tuple[dict[str, str], dict[str, Any]]:
+    """Build a scrubbed child environment: import user env first, then override."""
     base = {
         "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
         "HOME": os.environ.get("HOME", str(Path.home())),
@@ -670,7 +879,7 @@ def build_child_env(
         "override_keys": ["CLAUDE_CONFIG_DIR", "PWD", "TMPDIR", "PATH"],
         "final_keys": sorted(env.keys()),
     }
-    return env, provenance, [v for v in user_env.values() if v]
+    return env, provenance
 
 
 # ---------------------------------------------------------------------------
@@ -731,8 +940,8 @@ def build_claude_argv(
 ) -> list[str]:
     """Exact argv as an array: one ``--tools`` value plus every supported flag.
 
-    The target workspace is bound only through the wrapped prompt and the process
-    start directory; there is no top-level ``--root`` flag.
+    Order is significant: behavioral fakes validate this exact sequence and
+    reject any other option (including an invented ``--root``).
     """
     return [
         claude_path,
@@ -755,19 +964,19 @@ def build_claude_argv(
 
 
 def parse_claude_argv(argv: list[str]) -> dict[str, Any]:
-    """Strict parser for the supported Claude argv surface.
+    """Strict parser for the supported Claude argv surface (unit-tested).
 
     Rejects every unknown option (including any invented ``--root``), records the
-    actual argv, and exposes the prompt contract. The target workspace is derived
-    only from the prompt contract via :func:`workspace_from_prompt`.
+    actual argv, and exposes the prompt contract. The target workspace is
+    derived only from the prompt contract.
     """
     if not argv:
         raise ValueError("empty argv")
     parsed: dict[str, Any] = {"executable": argv[0], "bool_flags": []}
     tokens = list(argv[1:])
-    prompt_parts: list[str] = []
     i = 0
     after_prompt_sep = False
+    prompt_parts: list[str] = []
     while i < len(tokens):
         tok = tokens[i]
         if after_prompt_sep:
@@ -908,19 +1117,6 @@ def parse_stream_json(stdout: str) -> list[dict[str, Any]]:
     return events
 
 
-def _assistant_blocks(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    blocks: list[dict[str, Any]] = []
-    for event in events:
-        if event.get("type") != "assistant":
-            continue
-        content = event.get("message", {}).get("content", [])
-        if isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict):
-                    blocks.append(block)
-    return blocks
-
-
 def _iter_assistant_blocks_indexed(events: list[dict[str, Any]]):
     for ev_index, event in enumerate(events):
         if event.get("type") != "assistant":
@@ -930,6 +1126,10 @@ def _iter_assistant_blocks_indexed(events: list[dict[str, Any]]):
             for block in content:
                 if isinstance(block, dict):
                     yield ev_index, block
+
+
+def _assistant_blocks(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [block for _, block in _iter_assistant_blocks_indexed(events)]
 
 
 def count_target_invocations(events: list[dict[str, Any]], target: str) -> tuple[int, list[str]]:
@@ -953,10 +1153,10 @@ def extract_routed_models(events: list[dict[str, Any]]) -> list[str]:
     return models
 
 
-def _collect_tool_results(events: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Map tool_use_id -> tool_result block from user messages."""
-    out: dict[str, dict[str, Any]] = {}
-    for event in events:
+def _collect_indexed_tool_results(events: list[dict[str, Any]]) -> list[tuple[int, str, Any, str]]:
+    """Indexed ``(event_index, tool_use_id, is_error, text)`` tool_result blocks."""
+    out: list[tuple[int, str, Any, str]] = []
+    for index, event in enumerate(events):
         if event.get("type") != "user":
             continue
         content = event.get("message", {}).get("content", [])
@@ -967,7 +1167,7 @@ def _collect_tool_results(events: list[dict[str, Any]]) -> dict[str, dict[str, A
                 continue
             tool_use_id = block.get("tool_use_id")
             if isinstance(tool_use_id, str):
-                out[tool_use_id] = block
+                out.append((index, tool_use_id, block.get("is_error"), _tool_result_text(block)))
     return out
 
 
@@ -989,7 +1189,7 @@ def _tool_result_text(block: dict[str, Any]) -> str:
 
 
 def tokenize_simple_command(raw: str) -> list[str] | None:
-    """Tokenize a simple Bash command; None if it is compound or unparseable."""
+    """Tokenize a simple Bash command; None if compound or unparseable."""
     if not isinstance(raw, str) or not raw.strip():
         return None
     if any(ch in raw for ch in SHELL_CONTROL_CHARS):
@@ -1004,124 +1204,170 @@ def _valid_d7y_tokens(tokens: list[str], verb: str, workspace: str) -> bool:
     return tokens == ["d7y", "initiatives", verb, "--root", workspace, "--json"]
 
 
-@dataclass
-class CommandRecord:
-    verb: str
-    present: bool
-    tool_use_id: str | None
-    event_index: int | None
-    raw_command: str
-    result_state: str | None  # "ok" | "error" | "unparseable" | "absent"
-    result_json: Any | None
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "verb": self.verb,
-            "present": self.present,
-            "tool_use_id": self.tool_use_id,
-            "event_index": self.event_index,
-            "raw_command": self.raw_command,
-            "result_state": self.result_state,
-            "result_json": self.result_json,
-        }
+def _starts_d7y_verb(tokens: list[str], verb: str) -> bool:
+    return len(tokens) >= 3 and tokens[:3] == ["d7y", "initiatives", verb]
 
 
-def _find_d7y_command(
-    events: list[dict[str, Any]], verb: str, workspace: str, results: dict[str, dict[str, Any]]
-) -> CommandRecord:
-    for ev_index, block in _iter_assistant_blocks_indexed(events):
-        if block.get("type") != "tool_use" or block.get("name") != "Bash":
-            continue
-        command = block.get("input", {}).get("command", "")
-        if not isinstance(command, str):
-            continue
-        tokens = tokenize_simple_command(command)
-        if tokens is not None and _valid_d7y_tokens(tokens, verb, workspace):
-            tool_use_id = block.get("id")
-            result_state: str | None = "absent"
-            result_json: Any | None = None
-            if isinstance(tool_use_id, str) and tool_use_id in results:
-                rb = results[tool_use_id]
-                if rb.get("is_error") is True:
-                    result_state = "error"
-                else:
-                    text = _tool_result_text(rb)
-                    try:
-                        result_json = json.loads(text)
-                        result_state = "ok" if isinstance(result_json, (dict, list)) else "unparseable"
-                    except (json.JSONDecodeError, ValueError):
-                        result_state = "unparseable"
-            return CommandRecord(
-                verb=verb, present=True, tool_use_id=tool_use_id if isinstance(tool_use_id, str) else None,
-                event_index=ev_index, raw_command=command, result_state=result_state,
-                result_json=result_json,
-            )
-    return CommandRecord(
-        verb=verb, present=False, tool_use_id=None, event_index=None,
-        raw_command="", result_state=None, result_json=None,
-    )
+def _validate_d7y_result(parsed: Any, workspace: str) -> tuple[bool, str | None]:
+    if not isinstance(parsed, dict):
+        return False, "result is not a JSON object"
+    if parsed.get("version") != 1:
+        return False, "result version is not 1"
+    if parsed.get("valid") is not True:
+        return False, "result valid is not true"
+    root = parsed.get("root")
+    if root is not None and root != workspace:
+        return False, "result root does not match workspace"
+    return True, None
 
 
 def analyze_d7y_commands(events: list[dict[str, Any]], workspace: str) -> dict[str, Any]:
-    """Exact-tokenized evidence for the supported d7y list/check commands.
+    """Exact-tokenized, correlated evidence for the d7y list/check commands.
 
-    Requires the exact tokenized command shape, correlates each Bash tool_use
-    with its tool_result, and reports whether the stream shape exposes results.
-    Incomplete trace shapes (d7y commands emitted but no tool_result channel) are
-    ``shape_supported == False`` and must be graded ``ungradable``, never pass.
+    Preserves event positions, requires exactly one later non-error tool_result
+    matching each relevant Bash tool_use ID, validates the versioned D7Y result
+    shape, and requires a successful list before a successful check. Duplicate
+    IDs, results preceding uses, missing/ambiguous results, compounds, wrappers,
+    quoted/echoed evidence, wrong roots, and duplicate/missing flags are rejected.
+    Absent/ambiguous/unsupported stream shapes are reported as not
+    ``shape_supported`` and must be graded ``ungradable``.
     """
-    results = _collect_tool_results(events)
-    list_rec = _find_d7y_command(events, "list", workspace, results)
-    check_rec = _find_d7y_command(events, "check", workspace, results)
-    d7y_command_count = int(list_rec.present) + int(check_rec.present)
-    shape_supported = not (d7y_command_count > 0 and len(results) == 0)
+    bash_uses: list[tuple[int, str | None, str]] = []
+    all_use_ids: list[str | None] = []
+    for index, block in _iter_assistant_blocks_indexed(events):
+        if block.get("type") != "tool_use":
+            continue
+        tid = block.get("id")
+        all_use_ids.append(tid if isinstance(tid, str) else None)
+        if block.get("name") == "Bash":
+            command = block.get("input", {}).get("command", "")
+            bash_uses.append((index, tid if isinstance(tid, str) else None, command if isinstance(command, str) else ""))
+
+    results = _collect_indexed_tool_results(events)
+    use_id_counts = Counter(tid for tid in all_use_ids if tid is not None)
+    result_id_counts = Counter(tid for _, tid, _, _ in results)
+    duplicate_use_ids = sorted(i for i, c in use_id_counts.items() if c > 1)
+    duplicate_result_ids = sorted(i for i, c in result_id_counts.items() if c > 1)
+    shape_supported = (
+        len(results) > 0 and not duplicate_use_ids and not duplicate_result_ids
+    )
+
+    def classify(verb: str) -> dict[str, Any]:
+        attempted = []
+        valid_match = None
+        for index, tid, command in bash_uses:
+            tokens = tokenize_simple_command(command)
+            if tokens is None:
+                continue
+            if not _starts_d7y_verb(tokens, verb):
+                continue
+            attempted.append((index, tid, command, tokens))
+            if _valid_d7y_tokens(tokens, verb, workspace):
+                valid_match = (index, tid, command)
+                break
+        if valid_match is None:
+            cls = "wrong_shape" if attempted else "not_attempted"
+            return {"present": False, "class": cls, "tool_use_id": None,
+                    "event_index": None, "raw_command": "", "result_state": None,
+                    "result_json": None, "attempts": len(attempted)}
+        use_index, tid, command = valid_match
+        matched = [(ri, is_error, text) for ri, rid, is_error, text in results if rid == tid]
+        result_state: str
+        result_json: Any | None = None
+        if len(matched) == 0:
+            result_state = "missing_result"
+        elif len(matched) > 1:
+            result_state = "ambiguous_result"
+        else:
+            r_index, is_error, text = matched[0]
+            if r_index < use_index:
+                result_state = "result_before_use"
+            elif is_error is not True and is_error is not False:
+                result_state = "invalid_result"
+            elif is_error is True:
+                result_state = "error"
+            else:
+                try:
+                    parsed = json.loads(text)
+                except (json.JSONDecodeError, ValueError):
+                    result_state = "unparseable"
+                else:
+                    ok, _err = _validate_d7y_result(parsed, workspace)
+                    if ok:
+                        result_state = "ok"
+                        result_json = parsed
+                    else:
+                        result_state = "invalid_result"
+        return {"present": True, "class": result_state, "tool_use_id": tid,
+                "event_index": use_index, "raw_command": command,
+                "result_state": result_state, "result_json": result_json,
+                "attempts": len(attempted)}
+
+    list_rec = classify("list")
+    check_rec = classify("check")
     order_ok = (
-        list_rec.event_index is not None
-        and check_rec.event_index is not None
-        and list_rec.event_index < check_rec.event_index
+        list_rec["event_index"] is not None
+        and check_rec["event_index"] is not None
+        and list_rec["event_index"] < check_rec["event_index"]
     )
     return {
         "shape_supported": shape_supported,
         "tool_result_count": len(results),
         "workspace": workspace,
-        "list": list_rec.to_dict(),
-        "check": check_rec.to_dict(),
+        "duplicate_tool_use_ids": duplicate_use_ids,
+        "duplicate_result_ids": duplicate_result_ids,
+        "list": list_rec,
+        "check": check_rec,
         "order_ok": order_ok,
     }
 
 
-def check_canary_leakage(events: list[dict[str, Any]]) -> tuple[bool, list[str]]:
-    """Return ``(clean, issues)``. Any canary signal/discovery/invocation is a leak.
+def _walk_strings(obj: Any):
+    if isinstance(obj, str):
+        yield obj
+    elif isinstance(obj, dict):
+        for k, v in obj.items():
+            if isinstance(k, str):
+                yield k
+            yield from _walk_strings(v)
+    elif isinstance(obj, list):
+        for item in obj:
+            yield from _walk_strings(item)
 
-    The project-instruction canary is detected through its unique observable
-    signal token appearing anywhere in event/result content; the fake global
-    skill is detected through discovery or invocation.
+
+def check_canary_leakage(events: list[dict[str, Any]]) -> tuple[bool, list[str]]:
+    """Return ``(clean, issues)``.
+
+    Recursively scans every string key and value in every parsed event and the
+    terminal result for canary markers/signal. Fake-global-skill discovery and
+    ``Skill`` invocation use exact identities, not substring matching.
     """
     issues: list[str] = []
+    # Exact-identity global-skill checks against init skills and Skill tool_use.
     for event in events:
         if event.get("type") == "system" and event.get("subtype") == "init":
             for skill in event.get("skills", []) or []:
-                if isinstance(skill, str) and FAKE_GLOBAL_SKILL_NAME in skill:
+                if isinstance(skill, str) and _is_canary_global_skill(skill):
                     issues.append(f"canary global skill discovered in init: {skill}")
-        if event.get("type") == "result":
-            result = event.get("result")
-            if isinstance(result, str) and PROJECT_INSTRUCTION_SIGNAL in result:
-                issues.append("project-instruction canary signal present in result")
     for block in _assistant_blocks(events):
         if block.get("type") == "tool_use" and block.get("name") == "Skill":
-            skill = block.get("input", {}).get("skill", "")
-            if isinstance(skill, str) and FAKE_GLOBAL_SKILL_NAME in skill:
+            skill = block.get("input", {}).get("skill")
+            if isinstance(skill, str) and _is_canary_global_skill(skill):
                 issues.append(f"canary global skill invoked: {skill}")
-        if block.get("type") == "text":
-            text = block.get("text", "")
-            if isinstance(text, str):
-                if PROJECT_INSTRUCTION_SIGNAL in text:
-                    issues.append("project-instruction canary signal present in response")
-                if PROJECT_INSTRUCTION_CANARY in text:
-                    issues.append("project-instruction canary marker present in response")
-                if GLOBAL_SKILL_CANARY in text:
-                    issues.append("global-skill canary present in response")
+    # Recursive marker/signal scan over the entire event content.
+    for event in events:
+        for text in _walk_strings(event):
+            for marker in CANARY_MARKERS:
+                if marker in text:
+                    issues.append(f"canary content present in event: {marker}")
     return len(issues) == 0, issues
+
+
+def _is_canary_global_skill(identity: str) -> bool:
+    bare = identity.split(":")[-1]
+    return bare == FAKE_GLOBAL_SKILL_NAME and (
+        identity == FAKE_GLOBAL_SKILL_NAME or identity.endswith(":" + FAKE_GLOBAL_SKILL_NAME)
+    )
 
 
 @dataclass
@@ -1146,18 +1392,14 @@ def validate_arm_events(
     exit_code: int | None,
     timed_out: bool,
 ) -> ArmValidation:
-    """Require exact runtime state and a successful process outcome.
-
-    A valid-looking stream followed by a nonzero exit or timeout invalidates the
-    arm (and therefore the pair).
-    """
+    """Require exact runtime state and a successful process outcome."""
     errors: list[str] = []
     target = expected_target(skill_name)
 
     if timed_out:
         errors.append("arm timed out")
-    if exit_code is not None and exit_code != 0:
-        errors.append(f"subprocess exited nonzero (exit {exit_code})")
+    if exit_code != 0:
+        errors.append("subprocess did not exit zero")
 
     init_events = [e for e in events if e.get("type") == "system" and e.get("subtype") == "init"]
     if len(init_events) == 0:
@@ -1176,27 +1418,26 @@ def validate_arm_events(
     if tools != EXPECTED_TOOLS:
         errors.append(f"init tools {tools!r} != {EXPECTED_TOOLS!r}")
 
+    # Exact accounted skill sets.
     skills = init.get("skills", []) or []
     skills_str = [s for s in skills if isinstance(s, str)]
-    if with_skill:
-        if target not in skills_str:
-            errors.append(f"target skill {target!r} not in init skills")
-        if BUILT_IN_SKILL not in skills_str:
-            errors.append(f"built-in {BUILT_IN_SKILL!r} missing from init skills")
-    else:
-        if target in skills_str:
-            errors.append("target skill leaked into baseline init skills")
-    for s in skills_str:
-        if FAKE_GLOBAL_SKILL_NAME in s:
-            errors.append(f"canary skill discovered in init: {s!r}")
+    expected_skills = {target, BUILT_IN_SKILL} if with_skill else {BUILT_IN_SKILL}
+    if set(skills_str) != expected_skills:
+        errors.append(
+            f"init skills {sorted(set(skills_str))!r} != {sorted(expected_skills)!r}"
+        )
 
-    plugins = init.get("plugins", []) or []
-    plugin_names = [p.get("name") for p in plugins if isinstance(p, dict)]
-    if expected_plugin not in plugin_names:
-        errors.append(f"expected plugin {expected_plugin!r} not in {plugin_names!r}")
-    extra_plugins = [n for n in plugin_names if n != expected_plugin]
-    if extra_plugins:
-        errors.append(f"unexpected plugins: {extra_plugins!r}")
+    # Exactly one structurally valid expected plugin, no extras/malformed.
+    plugins = init.get("plugins", [])
+    plugin_ok = False
+    if isinstance(plugins, list) and len(plugins) == 1:
+        only = plugins[0]
+        if isinstance(only, dict) and only.get("name") == expected_plugin:
+            plugin_ok = True
+        else:
+            errors.append(f"plugin entry malformed or wrong: {only!r}")
+    else:
+        errors.append(f"expected exactly one plugin {expected_plugin!r}, got {plugins!r}")
 
     session_id = init.get("session_id")
     if not isinstance(session_id, str) or not session_id:
@@ -1224,9 +1465,18 @@ def validate_arm_events(
                 errors.append(f"result missing required field {field_name!r}")
             elif not isinstance(result[field_name], expected_type):
                 errors.append(f"result field {field_name!r} has wrong type")
+        # Canonical modelUsage entry metadata shape.
         usage = result.get("modelUsage")
-        if isinstance(usage, dict) and EXPECTED_MODEL not in usage:
-            errors.append(f"result modelUsage lacks canonical {EXPECTED_MODEL!r} entry")
+        if isinstance(usage, dict):
+            entry = usage.get(EXPECTED_MODEL)
+            if not isinstance(entry, dict):
+                errors.append("modelUsage canonical entry missing or not an object")
+            else:
+                provider = entry.get("provider")
+                if not isinstance(provider, str) or not provider:
+                    errors.append("modelUsage canonical entry provider missing")
+                if entry.get("canonicalModel") != EXPECTED_MODEL:
+                    errors.append("modelUsage canonical entry canonicalModel mismatch")
 
     routed = extract_routed_models(events)
     for model in routed:
@@ -1241,7 +1491,7 @@ def validate_arm_events(
         session_id=session_id if isinstance(session_id, str) else None,
         routed_models=routed,
         skills=skills_str,
-        plugin=expected_plugin if expected_plugin in plugin_names else None,
+        plugin=expected_plugin if plugin_ok else None,
     )
 
 
@@ -1257,16 +1507,24 @@ def run_independent_checker(
     process_start_dir: Path,
     env: dict[str, str],
 ) -> dict[str, Any]:
-    """Run the installed checker after an arm; preserve separate evidence."""
+    """Run the installed checker after an arm; preserve separate evidence.
+
+    Never raises: a checker exception is captured as an error record so it
+    cannot skip arm finalization.
+    """
     argv = [str(d7y_executable), "initiatives", "check", "--root", str(workspace), "--json"]
-    proc = subprocess.run(
-        argv,
-        cwd=str(process_start_dir),
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        proc = subprocess.run(
+            argv,
+            cwd=str(process_start_dir),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        return {"argv": argv, "exit_code": None, "stdout": "", "stderr": str(exc),
+                "parsed": None, "valid": False, "state": "checker_error"}
     parsed = None
     if proc.stdout.strip():
         try:
@@ -1280,6 +1538,7 @@ def run_independent_checker(
         "stderr": proc.stderr,
         "parsed": parsed,
         "valid": proc.returncode == 0,
+        "state": "ran",
     }
 
 
@@ -1301,7 +1560,7 @@ class ArmResult:
     plugin_root: Path
     argv: list[str]
     prompt: str
-    state: str = "pending"  # pending|dry_run|unstarted|spawn_error|parse_error|completed
+    state: str = "pending"  # pending|dry_run|unstarted|spawn_error|parse_error|completed|checker_error
     outcome: ProcessOutcome | None = None
     events: list[dict[str, Any]] = field(default_factory=list)
     validation: ArmValidation | None = None
@@ -1310,50 +1569,23 @@ class ArmResult:
     command_analysis: dict[str, Any] = field(default_factory=dict)
     checker: dict[str, Any] | None = None
     workspace_changes: dict[str, Any] = field(default_factory=dict)
+    workspace_snapshot: dict[str, Any] = field(default_factory=dict)
     canary_clean: bool = True
     canary_issues: list[str] = field(default_factory=list)
     final_response: str | None = None
     telemetry: dict[str, Any] = field(default_factory=dict)
     staged: list[StagedObject] = field(default_factory=list)
-    baseline_hash: dict[str, str] = field(default_factory=dict)
-
-
-def compute_workspace_changes(
-    workspace: Path, baseline_hash: dict[str, str]
-) -> dict[str, Any]:
-    added: list[str] = []
-    modified: list[str] = []
-    deleted: list[str] = []
-    current = hash_workspace(workspace)
-    for rel, hsh in current.items():
-        if rel not in baseline_hash:
-            added.append(rel)
-        elif baseline_hash[rel] != hsh:
-            modified.append(rel)
-    for rel in baseline_hash:
-        if rel not in current:
-            deleted.append(rel)
-    return {
-        "added": sorted(added),
-        "modified": sorted(modified),
-        "deleted": sorted(deleted),
-        "baseline_count": len(baseline_hash),
-        "current_count": len(current),
-    }
-
-
-def count_initiatives_created(changes: dict[str, Any]) -> int:
-    added = changes.get("added", [])
-    return sum(
-        1
-        for rel in added
-        if rel.startswith("initiatives/") and rel.endswith("/initiative.md")
-    )
+    baseline_snapshot: dict[str, Any] = field(default_factory=dict)
 
 
 def _arm_has_valid_evidence(arm: ArmResult) -> bool:
-    return bool(arm.validation and arm.validation.ok and arm.outcome and arm.outcome.exit_code == 0
-                and not arm.outcome.timed_out)
+    return bool(
+        arm.validation
+        and arm.validation.ok
+        and arm.outcome
+        and arm.outcome.exit_code == 0
+        and not arm.outcome.timed_out
+    )
 
 
 def evaluate_assertion(
@@ -1362,28 +1594,25 @@ def evaluate_assertion(
     with_skill: ArmResult,
     skill_name: str,
 ) -> tuple[str, str]:
-    """Resolve one assertion by explicit supported ID and semantics.
+    """Resolve one assertion by exact supported ID and semantics.
 
     Unknown deterministic IDs are ``ungradable``; a required ungradable check
     blocks case pass. Rubric/human assertions stay ``pending``.
     """
     aid = assertion.get("id", "")
     kind = assertion.get("kind")
-    required = assertion.get("required", False)
 
     if kind not in ("deterministic", "rubric", "human"):
         return CHECK_UNGRADABLE, f"unknown kind {kind!r}"
     if kind in ("rubric", "human"):
         return CHECK_PENDING, f"{kind} assertion requires human judgment"
+    if aid not in SUPPORTED_ASSERTION_IDS:
+        return CHECK_UNGRADABLE, f"unsupported deterministic assertion id {aid!r}"
+    if not _arm_has_valid_evidence(with_skill):
+        return CHECK_ERROR, "with-skill arm evidence invalid"
 
     target = expected_target(skill_name)
-
-    if not _arm_has_valid_evidence(with_skill):
-        # Without valid with-skill evidence, supported deterministic assertions
-        # are errors (not passes); unknown ones remain ungradable.
-        if aid in SUPPORTED_ASSERTION_IDS:
-            return CHECK_ERROR, "with-skill arm evidence invalid"
-        return CHECK_UNGRADABLE, f"unsupported deterministic assertion id {aid!r}"
+    changes = with_skill.workspace_changes
 
     if aid == "does-not-invoke":
         if with_skill.invocation_count > 0:
@@ -1392,7 +1621,7 @@ def evaluate_assertion(
             return CHECK_PASS, "target available but not invoked in negative control"
         return CHECK_UNGRADABLE, "target availability unproven for negative control"
 
-    if isinstance(aid, str) and aid.startswith("invokes-"):
+    if aid == "invokes-starting-skill":
         if with_skill.invocation_count > 0:
             return CHECK_PASS, f"target Skill invocation observed ({with_skill.invocation_count})"
         return CHECK_FAIL, "expected target invocation, none observed"
@@ -1400,52 +1629,43 @@ def evaluate_assertion(
     if aid == "runs-checker-before-and-after":
         ca = with_skill.command_analysis
         if not ca.get("shape_supported"):
-            return CHECK_UNGRADABLE, "stream shape does not expose tool results"
+            return CHECK_UNGRADABLE, "stream shape absent/ambiguous/unsupported"
         lst = ca.get("list", {}) or {}
         chk = ca.get("check", {}) or {}
-        if (
-            lst.get("present") and lst.get("result_state") == "ok"
-            and chk.get("present") and chk.get("result_state") == "ok"
-            and ca.get("order_ok")
-        ):
+        if lst.get("class") == "ok" and chk.get("class") == "ok" and ca.get("order_ok"):
             return CHECK_PASS, "exact d7y list then check observed with valid results"
+        if lst.get("class") in D7Y_AMBIGUOUS_CLASSES or chk.get("class") in D7Y_AMBIGUOUS_CLASSES:
+            return CHECK_UNGRADABLE, "d7y command success unconfirmable"
         return CHECK_FAIL, (
             f"missing/invalid d7y command evidence "
-            f"(list={lst.get('present')}/{lst.get('result_state')}, "
-            f"check={chk.get('present')}/{chk.get('result_state')}, "
-            f"order={ca.get('order_ok')})"
+            f"(list={lst.get('class')}, check={chk.get('class')}, order={ca.get('order_ok')})"
         )
 
     if aid == "creates-one-initiative":
-        created = count_initiatives_created(with_skill.workspace_changes)
+        created = count_initiatives_created(changes)
         checker_ok = bool(with_skill.checker and with_skill.checker.get("valid"))
         if created == 1 and checker_ok:
             return CHECK_PASS, f"exactly one initiative created and checker valid (created={created})"
         return CHECK_FAIL, f"expected one valid initiative (created={created}, checker_valid={checker_ok})"
 
     if aid == "creates-no-initiative":
-        created = count_initiatives_created(with_skill.workspace_changes)
+        created = count_initiatives_created(changes)
         if created == 0:
             return CHECK_PASS, "no initiative created in negative control"
         return CHECK_FAIL, f"unexpected initiative created in negative control (created={created})"
 
     if aid == "creates-no-duplicate":
-        created = count_initiatives_created(with_skill.workspace_changes)
-        if created == 0:
-            return CHECK_PASS, "no duplicate initiative created"
-        return CHECK_FAIL, f"unexpected duplicate initiative created (created={created})"
+        added = [r for r in changes.get("added", []) if _is_canonical_initiative(r)]
+        deleted = [r for r in changes.get("deleted", []) if _is_canonical_initiative(r)]
+        modified = [r for r in changes.get("modified", []) if _is_canonical_initiative(r)]
+        if not added and not deleted and not modified:
+            return CHECK_PASS, "existing canonical initiative unchanged; no duplicate added"
+        return CHECK_FAIL, (
+            f"duplicate or mutated canonical initiative "
+            f"(added={added}, modified={modified}, deleted={deleted})"
+        )
 
     return CHECK_UNGRADABLE, f"unsupported deterministic assertion id {aid!r}"
-
-
-# Explicitly supported deterministic assertion IDs. Anything else is ungradable.
-SUPPORTED_ASSERTION_IDS = {
-    "does-not-invoke",
-    "runs-checker-before-and-after",
-    "creates-one-initiative",
-    "creates-no-initiative",
-    "creates-no-duplicate",
-}
 
 
 def compute_checks(
@@ -1521,9 +1741,7 @@ def compute_checks(
         r["required"] and r["status"] in (CHECK_PENDING, CHECK_UNGRADABLE, CHECK_ERROR, CHECK_FAIL)
         for r in assertion_results
     )
-    case_pass = (
-        pair_validity == CHECK_PASS and treatment == CHECK_PASS and not blocking
-    )
+    case_pass = pair_validity == CHECK_PASS and treatment == CHECK_PASS and not blocking
 
     return {
         "pair_validity": {"status": pair_validity, "errors": pair_errors},
@@ -1536,45 +1754,18 @@ def compute_checks(
 
 
 # ---------------------------------------------------------------------------
-# Recursive redaction.
-# ---------------------------------------------------------------------------
-
-
-def redact_text(text: str, tokens: list[str]) -> str:
-    if not isinstance(text, str):
-        return text
-    out = text
-    for token in tokens:
-        if token:
-            out = out.replace(token, REDACTED)
-    return out
-
-
-def redact_obj(obj: Any, tokens: list[str]) -> Any:
-    if isinstance(obj, str):
-        return redact_text(obj, tokens)
-    if isinstance(obj, list):
-        return [redact_obj(item, tokens) for item in obj]
-    if isinstance(obj, dict):
-        return {key: redact_obj(value, tokens) for key, value in obj.items()}
-    return obj
-
-
-# ---------------------------------------------------------------------------
 # Artifact writing (always complete, always redacted).
 # ---------------------------------------------------------------------------
 
 
-def write_text(path: Path, content: str, tokens: list[str] | None = None) -> None:
+def write_text(path: Path, content: str, tokens: list[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(redact_text(content, tokens or []), encoding="utf-8")
+    path.write_text(redact_text(content, tokens), encoding="utf-8")
 
 
-def write_json(path: Path, data: Any, tokens: list[str] | None = None) -> None:
+def write_json(path: Path, data: Any, tokens: list[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(redact_obj(data, tokens or []), indent=2), encoding="utf-8"
-    )
+    path.write_text(json.dumps(redact_obj(data, tokens), indent=2), encoding="utf-8")
 
 
 def finalize_arm(
@@ -1585,11 +1776,7 @@ def finalize_arm(
     executable_version: str | None,
     tokens: list[str],
 ) -> None:
-    """Always write the complete per-arm artifact tree, even on failure.
-
-    Every named artifact is emitted even when empty; all content is redacted
-    against imported env values and forbidden source paths.
-    """
+    """Always write the complete per-arm artifact inventory, even on failure."""
     if arm.outcome is not None:
         write_text(arm_dir / "trace.jsonl", arm.outcome.stdout, tokens)
         write_text(arm_dir / "stderr.txt", arm.outcome.stderr, tokens)
@@ -1613,26 +1800,23 @@ def finalize_arm(
     write_json(arm_dir / "process.json", process_state, tokens)
 
     ws = workspace_from_prompt(arm.prompt)
-    prompt_contract = {
-        "workspace": ws,
-        "workspace_matches_arm": (ws == str(arm.workspace)) if ws else False,
-        "skill_directive_present": ("--root" in arm.prompt),
-    }
     write_json(
         arm_dir / "provenance.json",
         {
             "executable": executable,
             "executable_version": executable_version,
             "argv": arm.argv,
-            "prompt_contract": prompt_contract,
+            "prompt_contract": {
+                "workspace": ws,
+                "workspace_matches_arm": (ws == str(arm.workspace)) if ws else False,
+                "root_directive_present": ("--root" in arm.prompt),
+            },
             "state": arm.state,
         },
         tokens,
     )
 
-    write_text(
-        arm_dir / "final-response.txt", arm.final_response or "", tokens
-    )
+    write_text(arm_dir / "final-response.txt", arm.final_response or "", tokens)
 
     telemetry = dict(arm.telemetry)
     telemetry["routed_models"] = (
@@ -1643,25 +1827,17 @@ def finalize_arm(
     write_json(arm_dir / "telemetry.json", telemetry, tokens)
 
     write_json(arm_dir / "command-events.json", arm.command_analysis or {}, tokens)
-
-    if arm.checker is not None:
-        write_json(arm_dir / "checker.json", arm.checker, tokens)
-    else:
-        write_json(
-            arm_dir / "checker.json",
-            {"argv": None, "exit_code": None, "stdout": "", "stderr": "",
-             "parsed": None, "valid": False, "state": "not_run"},
-            tokens,
-        )
-
-    write_json(arm_dir / "workspace-changes.json", arm.workspace_changes or {}, tokens)
-
     write_json(
-        arm_dir / "selected-objects.json",
-        [obj.__dict__ for obj in arm.staged],
+        arm_dir / "checker.json",
+        arm.checker if arm.checker is not None else {
+            "argv": None, "exit_code": None, "stdout": "", "stderr": "",
+            "parsed": None, "valid": False, "state": "not_run",
+        },
         tokens,
     )
-
+    write_json(arm_dir / "workspace-changes.json", arm.workspace_changes or {}, tokens)
+    write_json(arm_dir / "workspace-snapshot.json", arm.workspace_snapshot or {}, tokens)
+    write_json(arm_dir / "selected-objects.json", [obj.__dict__ for obj in arm.staged], tokens)
     write_json(
         arm_dir / "validation.json",
         {
@@ -1673,7 +1849,6 @@ def finalize_arm(
         },
         tokens,
     )
-
     write_json(
         arm_dir / "arm-summary.json",
         {
@@ -1686,13 +1861,14 @@ def finalize_arm(
             "added": arm.workspace_changes.get("added", []) if arm.workspace_changes else [],
             "modified": arm.workspace_changes.get("modified", []) if arm.workspace_changes else [],
             "deleted": arm.workspace_changes.get("deleted", []) if arm.workspace_changes else [],
+            "type_changed": arm.workspace_changes.get("type_changed", []) if arm.workspace_changes else [],
         },
         tokens,
     )
 
 
 # ---------------------------------------------------------------------------
-# Preflight: shared by dry and live modes.
+# Preflight: atomic planning, then materialization.
 # ---------------------------------------------------------------------------
 
 
@@ -1723,168 +1899,11 @@ class Preflight:
     env_with_skill: dict[str, str]
     env_baseline: dict[str, str]
     env_provenance: dict[str, Any]
-    with_skill_baseline_hash: dict[str, str]
-    baseline_baseline_hash: dict[str, str]
+    with_skill_baseline_snapshot: dict[str, Any]
+    baseline_baseline_snapshot: dict[str, Any]
     claude_path_arg: str
     dry_run: bool
     timeout_seconds: float
-
-
-def run_preflight(args: argparse.Namespace, ctx: RunContext) -> Preflight:
-    repo = args.source_repo.resolve()
-    commit = resolve_commit(repo, args.commit or "HEAD")
-
-    suite_repo_path = args.suite.as_posix()
-    suite_rel = safe_relative_path(suite_repo_path).as_posix()
-    skill_repo_dir = skill_dir_of_suite(suite_rel)
-    suite = load_suite_from_commit(repo, commit, suite_rel)
-    skill_name = suite.get("skill_name") or Path(skill_repo_dir).name
-    case = find_case(suite, args.case)
-
-    verify_output_root(args.output, repo)
-    output_dir = args.output.resolve()
-    output_dir.mkdir(parents=True, exist_ok=False)
-
-    roots = {
-        "output": output_dir,
-        "with_skill_workspace": output_dir / "with-skill" / "workspace",
-        "baseline_workspace": output_dir / "baseline" / "workspace",
-        "with_skill_plugin": output_dir / "with-skill" / "plugin",
-        "baseline_plugin": output_dir / "baseline" / "plugin",
-        "with_skill_config": output_dir / "with-skill" / "config",
-        "baseline_config": output_dir / "baseline" / "config",
-        "with_skill_temp": output_dir / "with-skill" / "temp",
-        "baseline_temp": output_dir / "baseline" / "temp",
-        "with_skill_artifacts": output_dir / "with-skill" / "artifacts",
-        "baseline_artifacts": output_dir / "baseline" / "artifacts",
-        "capability": output_dir / "capability",
-        "process_start": output_dir / "process-start",
-        "canaries_with_skill": output_dir / "with-skill" / "canaries",
-        "canaries_baseline": output_dir / "baseline" / "canaries",
-    }
-    for root in roots.values():
-        root.mkdir(parents=True, exist_ok=True)
-
-    settings_path = output_dir / "harness-settings.json"
-    write_harness_settings(settings_path)
-
-    evals_abs = str((repo / "evals").resolve())
-    skills_abs = str((repo / skill_repo_dir.split("/")[0]).resolve())
-    leaked_paths = [str(repo.resolve()), evals_abs, skills_abs]
-
-    # Attach the preflight to the context before any materialization so any
-    # post-output failure still finalizes a manifest, summary, and source
-    # evidence. Late fields are filled in as each step succeeds.
-    preflight = Preflight(
-        repo=repo,
-        commit=commit,
-        suite_repo_path=suite_rel,
-        skill_repo_dir=skill_repo_dir,
-        skill_name=skill_name,
-        case=case,
-        output_dir=output_dir,
-        leaked_paths=leaked_paths,
-        redaction_tokens=list(leaked_paths),
-        roots=roots,
-        with_skill_workspace=roots["with_skill_workspace"],
-        baseline_workspace=roots["baseline_workspace"],
-        settings_path=settings_path,
-        with_skill_plugin=roots["with_skill_plugin"],
-        baseline_plugin=roots["baseline_plugin"],
-        capability_dir=roots["capability"],
-        process_start_dir=roots["process_start"],
-        staged_with_skill=[],
-        staged_baseline=[],
-        plugin_object_ids={},
-        capability_object_ids={},
-        source_status_before=ctx.source_status_before,
-        env_with_skill={},
-        env_baseline={},
-        env_provenance={},
-        with_skill_baseline_hash={},
-        baseline_baseline_hash={},
-        claude_path_arg=str(args.claude) if args.claude else "claude",
-        dry_run=args.dry_run,
-        timeout_seconds=float(args.timeout),
-    )
-    ctx.preflight = preflight
-    ctx.dry_run = preflight.dry_run
-
-    preflight.plugin_object_ids = write_plugin(
-        roots["with_skill_plugin"],
-        plugin_name=SESSION_PLUGIN_NAME,
-        with_skill=True,
-        repo=repo,
-        commit=commit,
-        skill_repo_dir=skill_repo_dir,
-    )
-    write_plugin(
-        roots["baseline_plugin"],
-        plugin_name=CONTROL_PLUGIN_NAME,
-        with_skill=False,
-        repo=repo,
-        commit=commit,
-        skill_repo_dir=skill_repo_dir,
-    )
-
-    preflight.capability_object_ids = materialize_capability(repo, commit, roots["capability"])
-
-    write_canaries(roots["with_skill_config"])
-    write_canaries(roots["baseline_config"])
-
-    user_settings_path = Path(
-        os.environ.get("D7Y_EVAL_USER_SETTINGS", str(Path.home() / ".claude" / "settings.json"))
-    )
-    env_with_skill, env_prov, ws_tokens = build_child_env(
-        user_settings_path=user_settings_path,
-        leaked_paths=leaked_paths,
-        config_dir=roots["with_skill_config"],
-        process_start_dir=roots["process_start"],
-        capability_dir=roots["capability"],
-        temp_dir=roots["with_skill_temp"],
-    )
-    env_baseline, _prov2, bl_tokens = build_child_env(
-        user_settings_path=user_settings_path,
-        leaked_paths=leaked_paths,
-        config_dir=roots["baseline_config"],
-        process_start_dir=roots["process_start"],
-        capability_dir=roots["capability"],
-        temp_dir=roots["baseline_temp"],
-    )
-    preflight.env_with_skill = env_with_skill
-    preflight.env_baseline = env_baseline
-    preflight.env_provenance = env_prov
-    preflight.redaction_tokens = sorted(set(ws_tokens + bl_tokens + leaked_paths))
-
-    seed_repo_paths = ["initiatives/README.md"]
-    preflight.staged_with_skill = stage_workspace_seed(
-        roots["with_skill_workspace"],
-        case=case,
-        repo=repo,
-        commit=commit,
-        skill_repo_dir=skill_repo_dir,
-        seed_repo_paths=seed_repo_paths,
-    )
-    preflight.staged_baseline = stage_workspace_seed(
-        roots["baseline_workspace"],
-        case=case,
-        repo=repo,
-        commit=commit,
-        skill_repo_dir=skill_repo_dir,
-        seed_repo_paths=seed_repo_paths,
-    )
-
-    for workspace in (roots["with_skill_workspace"], roots["baseline_workspace"]):
-        verify_workspace_isolation(workspace)
-
-    preflight.with_skill_baseline_hash = hash_workspace(roots["with_skill_workspace"])
-    preflight.baseline_baseline_hash = hash_workspace(roots["baseline_workspace"])
-    return preflight
-
-
-# ---------------------------------------------------------------------------
-# Arm execution.
-# ---------------------------------------------------------------------------
 
 
 def make_arm(preflight: Preflight, *, with_skill: bool) -> ArmResult:
@@ -1892,8 +1911,8 @@ def make_arm(preflight: Preflight, *, with_skill: bool) -> ArmResult:
     workspace = preflight.with_skill_workspace if with_skill else preflight.baseline_workspace
     plugin_root = preflight.with_skill_plugin if with_skill else preflight.baseline_plugin
     staged = preflight.staged_with_skill if with_skill else preflight.staged_baseline
-    baseline_hash = (
-        preflight.with_skill_baseline_hash if with_skill else preflight.baseline_baseline_hash
+    baseline_snapshot = (
+        preflight.with_skill_baseline_snapshot if with_skill else preflight.baseline_baseline_snapshot
     )
     prompt = wrap_prompt(preflight.case.get("prompt", ""), workspace)
     argv = build_claude_argv(
@@ -1909,7 +1928,178 @@ def make_arm(preflight: Preflight, *, with_skill: bool) -> ArmResult:
         argv=argv,
         prompt=prompt,
         staged=staged,
-        baseline_hash=baseline_hash,
+        baseline_snapshot=baseline_snapshot,
+    )
+
+
+def run_preflight(args: argparse.Namespace, ctx: "RunContext") -> Preflight:
+    repo = args.source_repo.resolve()
+    commit = resolve_commit(repo, args.commit or "HEAD")
+
+    suite_repo_path = args.suite.as_posix()
+    suite_rel = safe_relative_path(suite_repo_path).as_posix()
+    skill_repo_dir = skill_dir_of_suite(suite_rel)
+    suite = load_suite_from_commit(repo, commit, suite_rel)
+    skill_name = suite.get("skill_name") or Path(skill_repo_dir).name
+    if skill_name != SUPPORTED_SKILL_NAME:
+        raise PreflightError(
+            f"unsupported skill {skill_name!r}: this runner slice only supports "
+            f"{SUPPORTED_SKILL_NAME!r}"
+        )
+    case = find_case(suite, args.case)
+
+    # ---- Atomic planning: validate every source/destination before any write.
+    verify_output_root(args.output, repo)
+    evals_abs = str((repo / "evals").resolve())
+    skills_abs = str((repo / skill_repo_dir.split("/")[0]).resolve())
+    leaked_paths = [str(repo.resolve()), evals_abs, skills_abs]
+    user_settings_path = Path(
+        os.environ.get("D7Y_EVAL_USER_SETTINGS", str(Path.home() / ".claude" / "settings.json"))
+    )
+    # Acquire imported-value redaction tokens before any validation can expose them.
+    imported_tokens = collect_env_tokens(user_settings_path)
+
+    seed_repo_paths = ["initiatives/README.md"]
+    ws_entries = build_staging_plan(
+        case=case, repo=repo, commit=commit, skill_repo_dir=skill_repo_dir,
+        seed_repo_paths=seed_repo_paths,
+    )
+    bl_entries = build_staging_plan(
+        case=case, repo=repo, commit=commit, skill_repo_dir=skill_repo_dir,
+        seed_repo_paths=seed_repo_paths,
+    )
+    # Validate capability and skill objects exist as immutable, non-symlink blobs.
+    assert_tree_has_no_symlinks(repo, commit, skill_repo_dir)
+    assert_no_symlink_at(repo, commit, f"{skill_repo_dir}/SKILL.md")
+    for rel in ("d7y", "scripts/check-initiatives.py"):
+        assert_no_symlink_at(repo, commit, rel)
+        if not git_object_exists(repo, commit, rel):
+            raise PreflightError(f"capability object not found: {rel}")
+    # Validate both workspace maps fully before writing either.
+    output_dir = args.output.resolve()
+    ws_workspace = output_dir / "with-skill" / "workspace"
+    bl_workspace = output_dir / "baseline" / "workspace"
+    ws_plan, bl_plan = prevalidate_both_plans(ws_entries, bl_entries, ws_workspace, bl_workspace)
+
+    # ---- Create the genuinely new output root, then attach context + arms.
+    output_dir.mkdir(parents=True, exist_ok=False)
+    roots = {
+        "output": output_dir,
+        "with_skill_workspace": ws_workspace,
+        "baseline_workspace": bl_workspace,
+        "with_skill_plugin": output_dir / "with-skill" / "plugin",
+        "baseline_plugin": output_dir / "baseline" / "plugin",
+        "with_skill_config": output_dir / "with-skill" / "config",
+        "baseline_config": output_dir / "baseline" / "config",
+        "with_skill_temp": output_dir / "with-skill" / "temp",
+        "baseline_temp": output_dir / "baseline" / "temp",
+        "with_skill_artifacts": output_dir / "with-skill" / "artifacts",
+        "baseline_artifacts": output_dir / "baseline" / "artifacts",
+        "capability": output_dir / "capability",
+        "process_start": output_dir / "process-start",
+    }
+    for root in roots.values():
+        root.mkdir(parents=True, exist_ok=True)
+
+    preflight = Preflight(
+        repo=repo,
+        commit=commit,
+        suite_repo_path=suite_rel,
+        skill_repo_dir=skill_repo_dir,
+        skill_name=skill_name,
+        case=case,
+        output_dir=output_dir,
+        leaked_paths=leaked_paths,
+        redaction_tokens=sorted(set(leaked_paths + imported_tokens)),
+        roots=roots,
+        with_skill_workspace=ws_workspace,
+        baseline_workspace=bl_workspace,
+        settings_path=output_dir / "harness-settings.json",
+        with_skill_plugin=roots["with_skill_plugin"],
+        baseline_plugin=roots["baseline_plugin"],
+        capability_dir=roots["capability"],
+        process_start_dir=roots["process_start"],
+        staged_with_skill=[],
+        staged_baseline=[],
+        plugin_object_ids={},
+        capability_object_ids={},
+        source_status_before=ctx.source_status_before,
+        env_with_skill={},
+        env_baseline={},
+        env_provenance={},
+        with_skill_baseline_snapshot={},
+        baseline_baseline_snapshot={},
+        claude_path_arg=str(args.claude) if args.claude else "claude",
+        dry_run=args.dry_run,
+        timeout_seconds=float(args.timeout),
+    )
+    ctx.preflight = preflight
+    ctx.dry_run = preflight.dry_run
+    # Placeholder arm records immediately, so every later failure finalizes.
+    ctx.with_skill = make_arm(preflight, with_skill=True)
+    ctx.baseline = make_arm(preflight, with_skill=False)
+
+    # ---- Materialize the validated plans.
+    write_harness_settings(preflight.settings_path)
+    preflight.plugin_object_ids = write_plugin(
+        roots["with_skill_plugin"], plugin_name=SESSION_PLUGIN_NAME, with_skill=True,
+        repo=repo, commit=commit, skill_repo_dir=skill_repo_dir,
+    )
+    write_plugin(
+        roots["baseline_plugin"], plugin_name=CONTROL_PLUGIN_NAME, with_skill=False,
+        repo=repo, commit=commit, skill_repo_dir=skill_repo_dir,
+    )
+    preflight.capability_object_ids = materialize_capability(repo, commit, roots["capability"])
+    write_canaries(roots["with_skill_config"])
+    write_canaries(roots["baseline_config"])
+
+    env_with_skill, env_prov = build_child_env(
+        user_settings_path=user_settings_path, leaked_paths=leaked_paths,
+        config_dir=roots["with_skill_config"], process_start_dir=roots["process_start"],
+        capability_dir=roots["capability"], temp_dir=roots["with_skill_temp"],
+    )
+    env_baseline, _prov2 = build_child_env(
+        user_settings_path=user_settings_path, leaked_paths=leaked_paths,
+        config_dir=roots["baseline_config"], process_start_dir=roots["process_start"],
+        capability_dir=roots["capability"], temp_dir=roots["baseline_temp"],
+    )
+    preflight.env_with_skill = env_with_skill
+    preflight.env_baseline = env_baseline
+    preflight.env_provenance = env_prov
+
+    preflight.staged_with_skill = materialize_staging(
+        ws_workspace, ws_plan, repo, commit, ws_entries,
+    )
+    preflight.staged_baseline = materialize_staging(
+        bl_workspace, bl_plan, repo, commit, bl_entries,
+    )
+    ctx.with_skill.staged = preflight.staged_with_skill
+    ctx.baseline.staged = preflight.staged_baseline
+
+    for workspace in (ws_workspace, bl_workspace):
+        verify_workspace_isolation(workspace)
+
+    preflight.with_skill_baseline_snapshot = snapshot_workspace(ws_workspace)
+    preflight.baseline_baseline_snapshot = snapshot_workspace(bl_workspace)
+    ctx.with_skill.baseline_snapshot = preflight.with_skill_baseline_snapshot
+    ctx.baseline.baseline_snapshot = preflight.baseline_baseline_snapshot
+    return preflight
+
+
+# ---------------------------------------------------------------------------
+# Arm execution and evidence collection (finalization is centralized).
+# ---------------------------------------------------------------------------
+
+
+def _collect_arm_evidence(arm: ArmResult, preflight: Preflight, *, env: dict[str, str]) -> None:
+    """Snapshot workspace, run the wrapped independent checker, compute changes."""
+    arm.workspace_snapshot = snapshot_workspace(arm.workspace)
+    arm.workspace_changes = compute_workspace_changes(arm.baseline_snapshot, arm.workspace_snapshot)
+    arm.checker = run_independent_checker(
+        d7y_executable=preflight.capability_dir / "d7y",
+        workspace=arm.workspace,
+        process_start_dir=preflight.process_start_dir,
+        env=env,
     )
 
 
@@ -1922,23 +2112,17 @@ def execute_arm(
     executable_version: str | None,
     other_session_id: str | None,
 ) -> ArmResult:
-    arm_dir = preflight.roots["with_skill_artifacts" if with_skill else "baseline_artifacts"]
     env = preflight.env_with_skill if with_skill else preflight.env_baseline
 
-    # Substitute the resolved executable into the recorded argv.
     if executable is not None:
         arm.argv = [executable] + arm.argv[1:]
-        arm.state = "completed"
-    else:
-        arm.state = "unstarted"
 
     if executable is None:
-        finalize_arm(
-            arm_dir, arm, executable=None, executable_version=None,
-            tokens=preflight.redaction_tokens,
-        )
+        arm.state = "unstarted"
+        _collect_arm_evidence(arm, preflight, env=env)
         return arm
 
+    arm.state = "completed"
     try:
         outcome = run_process(
             arm.argv,
@@ -1949,31 +2133,17 @@ def execute_arm(
     except OSError as exc:
         arm.state = "spawn_error"
         arm.parse_error = f"process spawn failed: {exc}"
-        finalize_arm(
-            arm_dir, arm, executable=executable, executable_version=executable_version,
-            tokens=preflight.redaction_tokens,
-        )
+        _collect_arm_evidence(arm, preflight, env=env)
         return arm
 
     arm.outcome = outcome
-
     try:
         events = parse_stream_json(outcome.stdout)
         arm.events = events
     except ValueError as exc:
         arm.state = "parse_error"
         arm.parse_error = str(exc)
-        arm.workspace_changes = compute_workspace_changes(arm.workspace, arm.baseline_hash)
-        arm.checker = run_independent_checker(
-            d7y_executable=preflight.capability_dir / "d7y",
-            workspace=arm.workspace,
-            process_start_dir=preflight.process_start_dir,
-            env=env,
-        )
-        finalize_arm(
-            arm_dir, arm, executable=executable, executable_version=executable_version,
-            tokens=preflight.redaction_tokens,
-        )
+        _collect_arm_evidence(arm, preflight, env=env)
         return arm
 
     arm.state = "completed"
@@ -2001,24 +2171,12 @@ def execute_arm(
             "modelUsage": result.get("modelUsage"),
         }
 
-    arm.checker = run_independent_checker(
-        d7y_executable=preflight.capability_dir / "d7y",
-        workspace=arm.workspace,
-        process_start_dir=preflight.process_start_dir,
-        env=env,
-    )
-
-    arm.workspace_changes = compute_workspace_changes(arm.workspace, arm.baseline_hash)
-
-    finalize_arm(
-        arm_dir, arm, executable=executable, executable_version=executable_version,
-        tokens=preflight.redaction_tokens,
-    )
+    _collect_arm_evidence(arm, preflight, env=env)
     return arm
 
 
 # ---------------------------------------------------------------------------
-# Run context, finalization, manifest, summary.
+# Run context and one finalization path.
 # ---------------------------------------------------------------------------
 
 
@@ -2039,45 +2197,70 @@ class RunContext:
     error: str | None = None
 
 
-def write_run_manifest(ctx: RunContext) -> None:
+def _status_hash(status: str) -> str:
+    return hashlib.sha256(status.encode("utf-8")).hexdigest()
+
+
+def finalize_run(ctx: RunContext) -> None:
+    """One run-level finalization path: arms, manifest, checks, source, summary."""
+    ctx.source_status_after = source_status(ctx.repo)
     preflight = ctx.preflight
     if preflight is None:
         return
-    manifest = {
-        "commit": preflight.commit,
-        "suite": preflight.suite_repo_path,
-        "skill_name": preflight.skill_name,
-        "case_id": preflight.case.get("id"),
-        "should_trigger": preflight.case.get("should_trigger"),
-        "roots": {k: str(v) for k, v in preflight.roots.items()},
-        "executable": ctx.executable,
-        "executable_version": ctx.executable_version,
-        "claude_version_required": CLAUDE_VERSION,
-        "expected_model": EXPECTED_MODEL,
-        "expected_tools": EXPECTED_TOOLS,
-        "expected_tools_arg": EXPECTED_TOOLS_ARG,
-        "permission_mode": EXPECTED_PERMISSION_MODE,
-        "plugin_object_ids": preflight.plugin_object_ids,
-        "capability_object_ids": preflight.capability_object_ids,
-        "selected_objects": {
-            "with_skill": [obj.__dict__ for obj in preflight.staged_with_skill],
-            "baseline": [obj.__dict__ for obj in preflight.staged_baseline],
+    tokens = preflight.redaction_tokens
+    executable = ctx.executable
+    executable_version = ctx.executable_version
+
+    # Sanitize retained runtime workspaces before writing any evidence that
+    # could otherwise carry an unsanitized agent-authored value.
+    for arm in (ctx.with_skill, ctx.baseline):
+        if arm is not None and arm.workspace.exists():
+            sanitize_workspace(arm.workspace, tokens)
+
+    # Per-arm finalization (same inventory for every outcome).
+    if ctx.with_skill is not None:
+        finalize_arm(
+            preflight.roots["with_skill_artifacts"], ctx.with_skill,
+            executable=executable, executable_version=executable_version, tokens=tokens,
+        )
+    if ctx.baseline is not None:
+        finalize_arm(
+            preflight.roots["baseline_artifacts"], ctx.baseline,
+            executable=executable, executable_version=executable_version, tokens=tokens,
+        )
+
+    write_json(
+        preflight.output_dir / "manifest.json",
+        {
+            "commit": preflight.commit,
+            "suite": preflight.suite_repo_path,
+            "skill_name": preflight.skill_name,
+            "case_id": preflight.case.get("id"),
+            "should_trigger": preflight.case.get("should_trigger"),
+            "roots": {k: str(v) for k, v in preflight.roots.items()},
+            "executable": executable,
+            "executable_version": executable_version,
+            "claude_version_required": CLAUDE_VERSION,
+            "expected_model": EXPECTED_MODEL,
+            "expected_tools": EXPECTED_TOOLS,
+            "expected_tools_arg": EXPECTED_TOOLS_ARG,
+            "permission_mode": EXPECTED_PERMISSION_MODE,
+            "plugin_object_ids": preflight.plugin_object_ids,
+            "capability_object_ids": preflight.capability_object_ids,
+            "selected_objects": {
+                "with_skill": [obj.__dict__ for obj in preflight.staged_with_skill],
+                "baseline": [obj.__dict__ for obj in preflight.staged_baseline],
+            },
+            "env_provenance": preflight.env_provenance,
+            "source_status_before_hash": _status_hash(preflight.source_status_before),
+            "source_status_after_hash": _status_hash(ctx.source_status_after or ""),
+            "source_mutated": (ctx.source_status_after or "") != preflight.source_status_before,
+            "dry_run": preflight.dry_run,
+            "with_skill_argv": ctx.with_skill.argv if ctx.with_skill else None,
+            "baseline_argv": ctx.baseline.argv if ctx.baseline else None,
         },
-        "env_provenance": preflight.env_provenance,
-        "source_status_before_hash": _status_hash(preflight.source_status_before),
-        "source_status_after_hash": _status_hash(ctx.source_status_after or ""),
-        "source_mutated": (ctx.source_status_after or "") != preflight.source_status_before,
-        "dry_run": preflight.dry_run,
-        "with_skill_argv": ctx.with_skill.argv if ctx.with_skill else None,
-        "baseline_argv": ctx.baseline.argv if ctx.baseline else None,
-    }
-    write_json(preflight.output_dir / "manifest.json", manifest, preflight.redaction_tokens)
-
-
-def write_source_evidence(ctx: RunContext) -> None:
-    if ctx.preflight is None:
-        return
-    preflight = ctx.preflight
+        tokens,
+    )
     write_json(
         preflight.output_dir / "source-status.json",
         {
@@ -2087,26 +2270,18 @@ def write_source_evidence(ctx: RunContext) -> None:
         },
         [],
     )
+    if ctx.checks is not None:
+        write_json(preflight.output_dir / "checks.json", ctx.checks, tokens)
+    else:
+        write_json(
+            preflight.output_dir / "checks.json",
+            {"pair_validity": {"status": "fail", "errors": [ctx.error or "no checks computed"]},
+             "treatment_checks": {"status": "fail", "errors": []},
+             "with_skill_assertions": [], "baseline_observations": [],
+             "case_pass": False, "blocking": True},
+            tokens,
+        )
 
-
-def _status_hash(status: str) -> str:
-    return hashlib.sha256(status.encode("utf-8")).hexdigest()
-
-
-def write_checks(ctx: RunContext) -> None:
-    if ctx.preflight is None or ctx.checks is None:
-        return
-    write_json(
-        ctx.preflight.output_dir / "checks.json", ctx.checks, ctx.preflight.redaction_tokens
-    )
-
-
-def write_summary(ctx: RunContext) -> str:
-    if ctx.preflight is None:
-        return ""
-    preflight = ctx.preflight
-    checks = ctx.checks
-    mutated = (ctx.source_status_after or "") != preflight.source_status_before
     lines: list[str] = []
     lines.append(f"# Eval summary: {preflight.case.get('id')} ({preflight.skill_name})")
     lines.append("")
@@ -2116,6 +2291,7 @@ def write_summary(ctx: RunContext) -> str:
     lines.append(f"- dry run: {preflight.dry_run}")
     if ctx.error:
         lines.append(f"- error: {ctx.error}")
+    checks = ctx.checks
     if checks is not None:
         lines.append(f"- pair validity: {checks['pair_validity']['status']}")
         lines.append(f"- treatment checks: {checks['treatment_checks']['status']}")
@@ -2124,7 +2300,7 @@ def write_summary(ctx: RunContext) -> str:
         for a in checks["with_skill_assertions"]:
             req = " (required)" if a["required"] else ""
             lines.append(f"  - {a['id']} [{a['dimension']}/{a['kind']}]: {a['status']}{req}")
-    if mutated:
+    if (ctx.source_status_after or "") != preflight.source_status_before:
         lines.append("")
         lines.append("- WARNING: source checkout mutated during the run; result invalidated.")
     lines.append("")
@@ -2132,18 +2308,12 @@ def write_summary(ctx: RunContext) -> str:
         "This summary reports observations from one paired run only. It makes no "
         "maturity recommendation and does not modify SKILL.md or accept a benchmark."
     )
-    text = "\n".join(lines)
-    write_text(preflight.output_dir / "summary.md", text, preflight.redaction_tokens)
-    return text
+    write_text(preflight.output_dir / "summary.md", "\n".join(lines), tokens)
 
 
-def finalize_run(ctx: RunContext) -> None:
-    """One finalization path: write manifest, source evidence, checks, summary."""
-    ctx.source_status_after = source_status(ctx.repo)
-    write_source_evidence(ctx)
-    write_run_manifest(ctx)
-    write_checks(ctx)
-    write_summary(ctx)
+def _stderr(ctx: RunContext, message: str) -> None:
+    tokens = ctx.preflight.redaction_tokens if ctx.preflight else []
+    print(f"d7y-eval: {redact_text(message, tokens)}", file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2165,69 +2335,44 @@ def main(argv: list[str] | None = None) -> int:
     try:
         preflight = run_preflight(args, ctx)
 
-        # Explicit result records for both arms, created before resolution.
-        ctx.with_skill = make_arm(preflight, with_skill=True)
-        ctx.baseline = make_arm(preflight, with_skill=False)
-
         if preflight.dry_run:
             ctx.with_skill.state = "dry_run"
             ctx.baseline.state = "dry_run"
-            finalize_arm(
-                preflight.roots["with_skill_artifacts"], ctx.with_skill,
-                executable=None, executable_version=None, tokens=preflight.redaction_tokens,
-            )
-            finalize_arm(
-                preflight.roots["baseline_artifacts"], ctx.baseline,
-                executable=None, executable_version=None, tokens=preflight.redaction_tokens,
-            )
             ctx.exit_code = 0
         else:
             try:
-                executable, executable_version = resolve_executable(
-                    Path(preflight.claude_path_arg)
-                )
+                executable, executable_version = resolve_executable(Path(preflight.claude_path_arg))
                 ctx.executable = executable
                 ctx.executable_version = executable_version
             except PreflightError as exc:
                 ctx.error = f"executable resolution failed: {exc}"
-                print(f"d7y-eval: {ctx.error}", file=sys.stderr)
-                for arm, with_skill in ((ctx.with_skill, True), (ctx.baseline, False)):
-                    execute_arm(arm, preflight, with_skill=with_skill,
-                                executable=None, executable_version=None,
-                                other_session_id=None)
+                _stderr(ctx, ctx.error)
+                execute_arm(ctx.with_skill, preflight, with_skill=True, executable=None,
+                            executable_version=None, other_session_id=None)
+                execute_arm(ctx.baseline, preflight, with_skill=False, executable=None,
+                            executable_version=None, other_session_id=None)
                 ctx.checks = compute_checks(
                     case=preflight.case, with_skill=ctx.with_skill,
-                    baseline=ctx.baseline, skill_name=preflight.skill_name,
-                )
+                    baseline=ctx.baseline, skill_name=preflight.skill_name)
                 ctx.exit_code = 2
             else:
-                ctx.with_skill = execute_arm(
-                    ctx.with_skill, preflight, with_skill=True,
-                    executable=executable, executable_version=executable_version,
-                    other_session_id=None,
-                )
-                ctx.baseline = execute_arm(
-                    ctx.baseline, preflight, with_skill=False,
-                    executable=executable, executable_version=executable_version,
-                    other_session_id=(
-                        ctx.with_skill.validation.session_id
-                        if ctx.with_skill.validation else None
-                    ),
-                )
+                execute_arm(ctx.with_skill, preflight, with_skill=True, executable=executable,
+                            executable_version=executable_version, other_session_id=None)
+                execute_arm(ctx.baseline, preflight, with_skill=False, executable=executable,
+                            executable_version=executable_version,
+                            other_session_id=(ctx.with_skill.validation.session_id
+                                              if ctx.with_skill.validation else None))
                 ctx.checks = compute_checks(
                     case=preflight.case, with_skill=ctx.with_skill,
-                    baseline=ctx.baseline, skill_name=preflight.skill_name,
-                )
+                    baseline=ctx.baseline, skill_name=preflight.skill_name)
                 ctx.exit_code = 0 if ctx.checks["case_pass"] else 1
     except PreflightError as exc:
         ctx.error = f"preflight failed: {exc}"
-        print(f"d7y-eval: {ctx.error}", file=sys.stderr)
+        _stderr(ctx, ctx.error)
         ctx.exit_code = 2
     finally:
         finalize_run(ctx)
-        mutated = (ctx.source_status_after or "") != ctx.source_status_before
-        if mutated:
-            # Source mutation invalidates dry and live outcomes.
+        if (ctx.source_status_after or "") != ctx.source_status_before:
             ctx.exit_code = 1 if ctx.exit_code == 0 else ctx.exit_code
 
     return ctx.exit_code
