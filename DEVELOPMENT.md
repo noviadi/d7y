@@ -32,7 +32,7 @@ Agent contributors must follow the role-specific repository guidance in [`AGENTS
 The underlying scripts remain directly executable:
 
 - `python3 evals/validate_skill_evals.py`
-- `python3 evals/run_eval.py --suite <suite> --case <id> --output <dir>` (minimal skill eval runner)
+- `python3 evals/run_eval.py --source-repo <repo> --suite <suite> --case <id> --output <dir> [--commit <ref>] [--claude <path>] [--dry-run]` (minimal skill eval runner; reads every input from immutable Git objects, binds the target workspace through the supported Claude command surface, and writes a complete redacted artifact tree)
 - `python3 scripts/check-initiatives.py --root .` (shared initiative inventory and validation)
 - `scripts/delegate-claude.sh <prompt-path>`
 

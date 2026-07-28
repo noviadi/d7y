@@ -8,7 +8,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 ID_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
@@ -58,7 +58,27 @@ def validate_assertion(value: Any, where: str, errors: list[str]) -> None:
         errors.append(f"{where}.grader: must be non-empty text")
 
 
-def validate_file(value: Any, skill_dir: Path, where: str, errors: list[str]) -> None:
+SourceChecker = Callable[[str], "str | None"]
+"""A fixture-source checker returns an error message, or ``None`` when the source
+resolves and exists. The disk checker validates a working-tree skill directory;
+callers reading from immutable objects supply an equivalent object checker."""
+
+
+def _disk_source_checker(skill_dir: Path) -> SourceChecker:
+    def check(source: str) -> str | None:
+        source_path = (skill_dir / source).resolve()
+        if not source_path.is_relative_to(skill_dir.resolve()):
+            return "resolves outside the skill directory"
+        if not source_path.is_file():
+            return f"fixture does not exist: {source}"
+        return None
+
+    return check
+
+
+def validate_file(
+    value: Any, where: str, errors: list[str], *, check_source: SourceChecker
+) -> None:
     if not isinstance(value, dict):
         errors.append(f"{where}: file fixture must be an object")
         return
@@ -68,16 +88,16 @@ def validate_file(value: Any, skill_dir: Path, where: str, errors: list[str]) ->
     if not is_text(source) or not safe_relative(source):
         errors.append(f"{where}.source: must be a safe path relative to the skill directory")
     else:
-        source_path = (skill_dir / source).resolve()
-        if not source_path.is_relative_to(skill_dir.resolve()):
-            errors.append(f"{where}.source: resolves outside the skill directory")
-        elif not source_path.is_file():
-            errors.append(f"{where}.source: fixture does not exist: {source}")
+        message = check_source(source)
+        if message:
+            errors.append(f"{where}.source: {message}")
     if not is_text(destination) or not safe_relative(destination):
         errors.append(f"{where}.destination: must be a safe path relative to the eval workspace")
 
 
-def validate_case(value: Any, skill_dir: Path, where: str, errors: list[str]) -> None:
+def validate_case(
+    value: Any, where: str, errors: list[str], *, check_source: SourceChecker
+) -> None:
     if not isinstance(value, dict):
         errors.append(f"{where}: eval must be an object")
         return
@@ -96,7 +116,7 @@ def validate_case(value: Any, skill_dir: Path, where: str, errors: list[str]) ->
         errors.append(f"{where}.files: must be an array")
     else:
         for index, fixture in enumerate(files):
-            validate_file(fixture, skill_dir, f"{where}.files[{index}]", errors)
+            validate_file(fixture, f"{where}.files[{index}]", errors, check_source=check_source)
 
     assertions = value.get("assertions")
     if not isinstance(assertions, list):
@@ -109,41 +129,55 @@ def validate_case(value: Any, skill_dir: Path, where: str, errors: list[str]) ->
             errors.append(f"{where}.assertions: assertion IDs must be unique within the case")
 
 
-def validate_suite(path: Path) -> list[str]:
+def validate_suite_data(
+    value: Any, skill_dir_name: str, check_source: SourceChecker, where: str
+) -> list[str]:
+    """Validate a parsed suite against the committed contract.
+
+    ``check_source`` validates each ``files[].source`` against whatever backing
+    store the caller reads from (working tree or immutable objects). Returns a
+    list of human-readable errors; an empty list means the suite is valid.
+    """
     errors: list[str] = []
+    if not isinstance(value, dict):
+        return [f"{where}: suite must be an object"]
+
+    exact_keys(value, TOP_KEYS, {"schema_version", "skill_name", "evals"}, where, errors)
+    if value.get("schema_version") != 1:
+        errors.append(f"{where}.schema_version: must equal 1")
+    if value.get("skill_name") != skill_dir_name:
+        errors.append(f"{where}.skill_name: must match directory {skill_dir_name!r}")
+
+    cases = value.get("evals")
+    if not isinstance(cases, list):
+        errors.append(f"{where}.evals: must be an array")
+        return errors
+    if len(cases) < 3:
+        errors.append(f"{where}.evals: must contain at least three cases")
+    for index, case in enumerate(cases):
+        validate_case(case, f"{where}.evals[{index}]", errors, check_source=check_source)
+
+    ids = [item.get("id") for item in cases if isinstance(item, dict) and is_text(item.get("id"))]
+    if len(ids) != len(set(ids)):
+        errors.append(f"{where}.evals: case IDs must be unique")
+    triggers = [item.get("should_trigger") for item in cases if isinstance(item, dict)]
+    if True not in triggers:
+        errors.append(f"{where}.evals: requires at least one positive invocation case")
+    if False not in triggers:
+        errors.append(f"{where}.evals: requires at least one negative control")
+    return errors
+
+
+def validate_suite(path: Path) -> list[str]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         return [f"{path}: cannot read valid UTF-8 JSON: {error}"]
 
-    if not isinstance(value, dict):
-        return [f"{path}: suite must be an object"]
-
-    exact_keys(value, TOP_KEYS, {"schema_version", "skill_name", "evals"}, str(path), errors)
     skill_dir = path.parent.parent
-    if value.get("schema_version") != 1:
-        errors.append(f"{path}.schema_version: must equal 1")
-    if value.get("skill_name") != skill_dir.name:
-        errors.append(f"{path}.skill_name: must match directory {skill_dir.name!r}")
-
-    cases = value.get("evals")
-    if not isinstance(cases, list):
-        errors.append(f"{path}.evals: must be an array")
-        return errors
-    if len(cases) < 3:
-        errors.append(f"{path}.evals: must contain at least three cases")
-    for index, case in enumerate(cases):
-        validate_case(case, skill_dir, f"{path}.evals[{index}]", errors)
-
-    ids = [item.get("id") for item in cases if isinstance(item, dict) and is_text(item.get("id"))]
-    if len(ids) != len(set(ids)):
-        errors.append(f"{path}.evals: case IDs must be unique")
-    triggers = [item.get("should_trigger") for item in cases if isinstance(item, dict)]
-    if True not in triggers:
-        errors.append(f"{path}.evals: requires at least one positive invocation case")
-    if False not in triggers:
-        errors.append(f"{path}.evals: requires at least one negative control")
-    return errors
+    return validate_suite_data(
+        value, skill_dir.name, _disk_source_checker(skill_dir), str(path)
+    )
 
 
 def main() -> int:
