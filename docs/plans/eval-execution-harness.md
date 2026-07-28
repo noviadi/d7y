@@ -264,6 +264,16 @@ Focused acceptance cases must include suppression canaries for user or project i
 
 ### Execution posture
 
+Sixth incremental correction (process-evidence contract), on branch
+`work/eval-execution-harness`, base `9d9a33b`. The process assertion requires
+every Bash tool use to have exactly one later result and requires exactly one
+supported, complete `d7y initiatives list` and one `d7y initiatives check`
+command for the arm, with the list before the check. Correlated non-D7Y setup
+commands such as `pwd` and `mkdir` are retained in evidence and are allowed;
+duplicate, malformed, wrapped, or wrong-root D7Y attempts remain ungradable.
+This keeps the skill test about the required D7Y behavior while preserving
+strict evidence correlation and command-shape validation.
+
 Fifth incremental correction (live-binding defect pass), on branch `work/eval-execution-harness`, base `7cea204`. Launcher model alias `opus`; routed assistant model in this environment is GLM-5.2. The runner's requested contract model is `claude-sonnet-5`; the only routed assistant event supported by committed capability evidence is `glm-4.7`. No runner or plan redesign; no scope expansion. This correction responds to three runtime-binding defects exposed by the retained live qualification artifacts at `/tmp/d7y-live-positive-20260728-live/` and `/tmp/d7y-live-negative-20260728-live/`.
 
 ### Files changed (this correction)

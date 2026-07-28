@@ -1280,8 +1280,9 @@ def analyze_d7y_commands(events: list[dict[str, Any]], workspace: str) -> dict[s
     Preserves event positions and requires every Bash ``tool_use`` to correlate
     with exactly one later ``tool_result`` (no missing, duplicate, ambiguous, or
     preceding results). Validates the versioned D7Y result shape and requires a
-    successful list before a successful check. Only the exact ordered ``list``
-    then ``check`` commands pass; any extra Bash command fails the process.
+    successful list before a successful check. Only one exact ``list`` and one
+    exact ``check`` command may be present; other correlated Bash commands are
+    retained as agent activity but do not invalidate the D7Y evidence.
     Compounds, wrappers, quoted/echoed evidence, wrong roots, and
     duplicate/missing flags are rejected. Absent/ambiguous/unsupported stream
     shapes are reported as not ``shape_supported`` (graded ``ungradable``).
@@ -1377,16 +1378,29 @@ def analyze_d7y_commands(events: list[dict[str, Any]], workspace: str) -> dict[s
     list_idx = list_rec["event_index"]
     check_idx = check_rec["event_index"]
     order_ok = list_idx is not None and check_idx is not None and list_idx < check_idx
-    # Count Bash commands that are not exactly list or check (extra/unrelated).
+    # Count Bash commands that are not exactly list or check. These may be
+    # legitimate setup activity (for example pwd or mkdir), so correlation is
+    # still required but they are not themselves a D7Y assertion failure.
     exact_indices = {list_idx, check_idx}
     extra_bash_count = sum(1 for index, _tid, command in bash_uses
                            if index not in exact_indices
                            or not _exact_d7y(command, workspace))
+    d7y_attempt_counts = {}
+    d7y_exact_counts = {}
+    for _index, _tid, command in bash_uses:
+        tokens = tokenize_simple_command(command)
+        for verb in ("list", "check"):
+            if tokens is not None and _starts_d7y_verb(tokens, verb):
+                d7y_attempt_counts[verb] = d7y_attempt_counts.get(verb, 0) + 1
+                if _valid_d7y_tokens(tokens, verb, workspace):
+                    d7y_exact_counts[verb] = d7y_exact_counts.get(verb, 0) + 1
     return {
         "shape_supported": shape_supported,
         "tool_result_count": len(results),
         "bash_use_count": len(bash_uses),
         "extra_bash_count": extra_bash_count,
+        "d7y_attempt_counts": d7y_attempt_counts,
+        "d7y_exact_counts": d7y_exact_counts,
         "uncorrelated_bash_ids": uncorrelated,
         "workspace": workspace,
         "duplicate_tool_use_ids": duplicate_use_ids,
@@ -1764,10 +1778,14 @@ def evaluate_assertion(
         ca = with_skill.command_analysis
         if not ca.get("shape_supported"):
             return CHECK_UNGRADABLE, "stream shape absent/ambiguous/unsupported"
-        if ca.get("extra_bash_count", 0) != 0:
-            return CHECK_UNGRADABLE, "extra/unrelated Bash commands present"
         lst = ca.get("list", {}) or {}
         chk = ca.get("check", {}) or {}
+        attempts = ca.get("d7y_attempt_counts", {}) or {}
+        exact = ca.get("d7y_exact_counts", {}) or {}
+        if attempts.get("list") != 1 or attempts.get("check") != 1:
+            return CHECK_UNGRADABLE, "D7Y list/check attempt count is not exactly one each"
+        if exact.get("list") != 1 or exact.get("check") != 1:
+            return CHECK_UNGRADABLE, "D7Y list/check command shape is not exact"
         lst_cls = lst.get("class")
         chk_cls = chk.get("class")
         # Only a correctly-shaped command with a delivered result is gradable

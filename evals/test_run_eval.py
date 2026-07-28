@@ -515,10 +515,11 @@ def make_mutator_fake(tmp: Path, mutation: str) -> Path:
 def make_process_trace_fake(tmp: Path, variant: str) -> Path:
     """Emit a valid with-skill arm whose d7y command trace is controlled.
 
-    Variants exercise the runs-checker-before-and-after contract: only the
-    exact complete list-then-check trace passes; minimal/missing-field results,
-    extra correlated Bash, no d7y commands, and unsupported shapes are
-    ungradable; reversed valid commands fail.
+    Variants exercise the runs-checker-before-and-after contract: exactly one
+    complete list-then-check trace passes, with harmless correlated setup Bash
+    allowed; minimal/missing-field results, extra D7Y attempts, no d7y
+    commands, and unsupported shapes are ungradable; reversed valid commands
+    fail.
     """
     base = (
         "import glob as _glob\n"
@@ -552,6 +553,7 @@ def make_process_trace_fake(tmp: Path, variant: str) -> Path:
         "minimal": "    _bash('a', _L); _bash('b', _C); _res('a', _min); _res('b', _min)\n",
         "missing-fields": "    _bash('a', _L); _bash('b', _C); _res('a', _miss); _res('b', _ok)\n",
         "extra-correlated": "    _bash('a', _L); _bash('b', _C); _bash('z', 'ls'); _res('a', _ok); _res('b', _ok); _res('z', 'out')\n",
+        "duplicate-list": "    _bash('a', _L); _bash('b', _L); _bash('c', _C); _res('a', _ok); _res('b', _ok); _res('c', _ok)\n",
         "none": "    _bash('z', 'ls'); _res('z', 'out')\n",
         "reversed": "    _bash('b', _C); _bash('a', _L); _res('b', _ok); _res('a', _ok)\n",
     }
@@ -1480,7 +1482,8 @@ class TestPublicCLI(unittest.TestCase):
             "complete": "pass",          # exact list then check, complete results
             "minimal": "ungradable",     # minimal result JSON rejected
             "missing-fields": "ungradable",  # missing count field
-            "extra-correlated": "ungradable",  # extra Bash command WITH a result
+            "extra-correlated": "pass",   # harmless setup Bash WITH a result
+            "duplicate-list": "ungradable",  # duplicate D7Y attempt remains invalid
             "none": "ungradable",        # no d7y commands, only unrelated tool results
             "reversed": "fail",          # valid commands in reversed order
         }
