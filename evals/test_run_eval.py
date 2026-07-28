@@ -564,6 +564,48 @@ def make_process_trace_fake(tmp: Path, variant: str) -> Path:
     return _write_fake(tmp, "proc-" + variant, base + variants[variant] + tail)[0]
 
 
+def make_plugin_manifest_fake(tmp: Path) -> Path:
+    """A fake that independently validates the Claude 2.1.218 plugin manifest.
+
+    Production-independent: it loads ``<plugin-dir>/.claude-plugin/plugin.json``
+    itself and applies the manifest contract observed in the installed official
+    plugins (metadata-only; NO ``skills`` array) and in the live qualification
+    failure (``skills: Invalid input`` rejects the whole plugin). When the
+    manifest is valid it discovers skills from the ``skills/<name>/SKILL.md``
+    filesystem layout exactly as the real runtime does; when malformed it
+    reports no plugin and no discovered skill. It never imports
+    ``evals.run_eval``.
+    """
+    behavior = (
+        "import glob as _glob, os as _os\n"
+        "_mpath = _os.path.join(_plugin or '', '.claude-plugin', 'plugin.json')\n"
+        "_pm = None\n"
+        "try:\n"
+        "    _pm = json.load(open(_mpath))\n"
+        "except Exception:\n"
+        "    _pm = None\n"
+        "_valid = isinstance(_pm, dict) and isinstance(_pm.get('name'), str) "
+        "and _pm.get('name') and ('skills' not in _pm)\n"
+        "_pname = _pm.get('name') if _valid else None\n"
+        "_pver = (_pm.get('version') if _valid and isinstance(_pm.get('version'), str) else '0.0.1')\n"
+        "_disc = []\n"
+        "if _valid:\n"
+        "    for _m in _glob.glob(_os.path.join(_plugin or '', 'skills', '*', 'SKILL.md')):\n"
+        "        _disc.append(_os.path.basename(_os.path.dirname(_m)))\n"
+        "_plugins = [{'name': _pname, 'path': _plugin or '', 'version': _pver}] if _valid else []\n"
+        "_skills = [(_pname + ':' + _s) for _s in _disc] + ['doctor'] if _valid else ['doctor']\n"
+        "_sid = 'mf-' + str(_os.getpid())\n"
+        "print(json.dumps({'type': 'system', 'subtype': 'init', 'session_id': _sid, "
+        "'tools': ['Skill', 'Read', 'Write', 'Edit', 'Bash'], 'model': 'claude-sonnet-5', "
+        "'skills': _skills, 'plugins': _plugins, 'mcp_servers': [], 'permissionMode': 'dontAsk'}))\n"
+        "print(json.dumps({'type': 'result', 'subtype': 'success', 'result': 'ok', 'is_error': False, "
+        "'num_turns': 1, 'permission_denials': [], "
+        "'modelUsage': {'claude-sonnet-5': {'provider': 'firstParty', 'canonicalModel': 'claude-sonnet-5'}}}))\n"
+        "sys.exit(0)\n"
+    )
+    return _write_fake(tmp, "manifest", behavior)[0]
+
+
 # ---------------------------------------------------------------------------
 # Narrow unit tests: production parser, path, redaction primitives.
 # ---------------------------------------------------------------------------
@@ -933,6 +975,121 @@ class TestValidateArmEvents(unittest.TestCase):
                            other_session_id="shared")
         self.assertFalse(v.ok)
 
+    # -- runtime tool order is not significant; exact set is ----------------
+
+    def test_tool_order_permutation_accepted(self):
+        # Claude Code 2.1.218 reports tools alphabetically regardless of argv.
+        for order in (
+            ["Bash", "Edit", "Read", "Skill", "Write"],  # observed live order
+            ["Write", "Bash", "Skill", "Edit", "Read"],
+            list(run_eval.EXPECTED_TOOLS),               # argv order
+        ):
+            self.assertTrue(self._validate(self._events(init={"tools": order})).ok, order)
+
+    def test_tool_missing_rejected(self):
+        self.assertFalse(self._validate(self._events(init={
+            "tools": ["Skill", "Read", "Write", "Edit"]})).ok)
+
+    def test_tool_extra_rejected(self):
+        self.assertFalse(self._validate(self._events(init={
+            "tools": ["Skill", "Read", "Write", "Edit", "Bash", "WebSearch"]})).ok)
+
+    def test_tool_duplicate_rejected(self):
+        # Five entries but Write duplicated and Bash missing.
+        self.assertFalse(self._validate(self._events(init={
+            "tools": ["Skill", "Read", "Write", "Edit", "Write"]})).ok)
+
+    def test_tool_nonstring_rejected(self):
+        self.assertFalse(self._validate(self._events(init={
+            "tools": ["Skill", "Read", "Write", "Edit", 5]})).ok)
+
+    def test_tool_not_list_rejected(self):
+        self.assertFalse(self._validate(self._events(init={"tools": "Skill"})).ok)
+
+
+class TestPluginManifest(unittest.TestCase):
+    """The generated plugin manifest must match the Claude 2.1.218 contract.
+
+    An independent fake validates the concrete manifest exactly as the live
+    runtime loader does: metadata-only manifests are accepted and discover the
+    skill via filesystem layout; a ``skills`` array (or missing name/manifest)
+    is rejected and the plugin is not loaded.
+    """
+
+    def _write_plugin(self, root: Path, *, manifest: dict, skill: bool) -> Path:
+        cp = root / ".claude-plugin"
+        cp.mkdir(parents=True, exist_ok=True)
+        (cp / "plugin.json").write_text(json.dumps(manifest, indent=2))
+        if skill:
+            sd = root / "skills" / "starting-initiatives"
+            sd.mkdir(parents=True, exist_ok=True)
+            (sd / "SKILL.md").write_text("---\nname: starting-initiatives\ndescription: x\n---\n# s\n")
+        return root
+
+    def test_independent_fake_accepts_generated_manifest_and_discovers_skill(self):
+        tmp = Path(tempfile.mkdtemp(prefix="d7y-eval-"))
+        try:
+            repo, _ = make_repo(tmp)
+            fake = make_plugin_manifest_fake(tmp)
+            output = tmp / "out"
+            proc = run_cli(repo, "skills/starting-initiatives/evals/evals.json",
+                           "start-new-initiative", output, claude=fake,
+                           user_settings=make_user_settings(tmp))
+            self.assertNotEqual(proc.returncode, 2, proc.stderr)
+            ws_init = json.loads((output / "with-skill" / "artifacts" / "trace.jsonl")
+                                 .read_text().splitlines()[0])
+            self.assertEqual(len(ws_init["plugins"]), 1)
+            self.assertEqual(ws_init["plugins"][0]["name"], "d7y-eval-session")
+            self.assertIn("d7y-eval-session:starting-initiatives", ws_init["skills"])
+            bl_init = json.loads((output / "baseline" / "artifacts" / "trace.jsonl")
+                                 .read_text().splitlines()[0])
+            self.assertEqual(len(bl_init["plugins"]), 1)
+            self.assertEqual(bl_init["plugins"][0]["name"], "d7y-eval-control")
+            self.assertNotIn("d7y-eval-session:starting-initiatives", bl_init["skills"])
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_independent_fake_rejects_malformed_manifests(self):
+        tmp = Path(tempfile.mkdtemp(prefix="d7y-eval-"))
+        fake = make_plugin_manifest_fake(tmp)
+        try:
+            valid = self._write_plugin(tmp / "valid", manifest={
+                "name": "d7y-eval-session", "version": "0.0.1",
+                "description": "D7Y eval session plugin"}, skill=True)
+            cases = {
+                "declares-skills": {
+                    "name": "d7y-eval-session", "version": "0.0.1",
+                    "skills": [{"name": "starting-initiatives", "path": "skills/starting-initiatives"}]},
+                "missing-name": {"version": "0.0.1", "description": "x"},
+                "missing-manifest": None,
+            }
+            for case, manifest in cases.items():
+                root = tmp / case
+                if manifest is None:
+                    root.mkdir(parents=True, exist_ok=True)
+                else:
+                    self._write_plugin(root, manifest=manifest, skill=True)
+                argv = run_eval.build_claude_argv(
+                    claude_path=str(fake), settings_path=Path("/s"),
+                    plugin_root=root, prompt="do work\nTarget workspace root: /ws",
+                )
+                proc = subprocess.run(argv, capture_output=True, text=True)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                init = json.loads(proc.stdout.splitlines()[0])
+                self.assertEqual(init["plugins"], [], f"{case}: malformed manifest must not load")
+                self.assertNotIn("d7y-eval-session:starting-initiatives", init["skills"], case)
+            # The valid metadata-only manifest is accepted and discovers the skill.
+            argv = run_eval.build_claude_argv(
+                claude_path=str(fake), settings_path=Path("/s"),
+                plugin_root=valid, prompt="do work\nTarget workspace root: /ws",
+            )
+            proc = subprocess.run(argv, capture_output=True, text=True)
+            init = json.loads(proc.stdout.splitlines()[0])
+            self.assertEqual(len(init["plugins"]), 1)
+            self.assertIn("d7y-eval-session:starting-initiatives", init["skills"])
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
 
 class TestStagingSafety(unittest.TestCase):
     def setUp(self):
@@ -1037,6 +1194,52 @@ class TestPublicCLI(unittest.TestCase):
                 self.assertNotIn(p.name, {".claude-plugin", "settings.json", "CLAUDE.md"})
         self.assertIn("d7y", manifest["capability_object_ids"])
         self.assertEqual(_git(self.repo, "status", "--porcelain"), "")
+
+    # -- live-binding correction: runtime-compatible plugin manifest shape ----
+
+    def test_with_skill_plugin_materialized_runtime_compatible(self):
+        fake = make_invocation_recording_fake(self.tmp)
+        output = self.tmp / "out"
+        proc = run_cli(self.repo, "skills/starting-initiatives/evals/evals.json",
+                       "start-new-initiative", output, claude=fake, dry_run=True,
+                       user_settings=make_user_settings(self.tmp))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        # Metadata-only manifest: NO 'skills' array (the live runtime rejects it).
+        ws_pm = json.loads((output / "with-skill" / "plugin" / ".claude-plugin" / "plugin.json").read_text())
+        self.assertEqual(set(ws_pm), {"name", "version", "description"})
+        self.assertEqual(ws_pm["name"], "d7y-eval-session")
+        self.assertEqual(ws_pm["version"], run_eval.PLUGIN_VERSION)
+        # The skill is discovered via filesystem layout, not manifest declaration.
+        self.assertTrue((output / "with-skill" / "plugin" / "skills" / "starting-initiatives"
+                         / "SKILL.md").exists())
+        # Baseline is equivalent: same metadata shape, no skills directory.
+        bl_pm = json.loads((output / "baseline" / "plugin" / ".claude-plugin" / "plugin.json").read_text())
+        self.assertEqual(set(bl_pm), {"name", "version", "description"})
+        self.assertEqual(bl_pm["name"], "d7y-eval-control")
+        self.assertFalse((output / "baseline" / "plugin" / "skills").exists())
+
+    # -- live-binding correction: harness permission config + dontAsk ---------
+
+    def test_harness_permissions_allow_only_five_tools_and_retain_dontask(self):
+        fake = make_invocation_recording_fake(self.tmp)
+        output = self.tmp / "out"
+        proc = run_cli(self.repo, "skills/starting-initiatives/evals/evals.json",
+                       "start-new-initiative", output, claude=fake, dry_run=True,
+                       user_settings=make_user_settings(self.tmp))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        settings = json.loads((output / "harness-settings.json").read_text())
+        allow = settings["permissions"]["allow"]
+        # Exactly the five required tools, nothing broader, no duplicates.
+        self.assertEqual(sorted(allow), sorted(run_eval.EXPECTED_TOOLS))
+        self.assertEqual(len(allow), len(set(allow)))
+        self.assertEqual(set(allow), set(run_eval.EXPECTED_TOOLS))
+        # The argv still carries dontAsk; no permissive mode substitution.
+        manifest = json.loads((output / "manifest.json").read_text())
+        argv = manifest["with_skill_argv"]
+        self.assertIn("--permission-mode", argv)
+        self.assertEqual(argv[argv.index("--permission-mode") + 1], "dontAsk")
+        for mode in ("acceptEdits", "bypassPermissions", "--dangerously-skip-permissions"):
+            self.assertNotIn(mode, argv)
 
     def test_neutral_prompt_and_independent_argv_records(self):
         fake, log = make_positive_fake(self.tmp)

@@ -497,7 +497,19 @@ def write_plugin(
     commit: str,
     skill_repo_dir: str,
 ) -> dict[str, str]:
-    """Materialize an authentic plugin tree under plugin_root."""
+    """Materialize an authentic plugin tree under plugin_root.
+
+    The Claude Code 2.1.218 plugin manifest contract (confirmed against the
+    installed official plugin manifests, e.g. ``example-plugin``,
+    ``claude-md-management``, ``skill-creator``) declares plugin metadata only:
+    ``name``, ``version``, and ``description``. It does NOT declare a
+    ``skills`` array. Skills are discovered at runtime from the plugin's
+    ``skills/<name>/SKILL.md`` filesystem layout. Declaring ``skills`` in the
+    manifest is rejected by the runtime (``Validation errors: skills: Invalid
+    input``) and prevents the plugin from loading at all, so the target skill
+    is never discovered. Both arms emit the same metadata-only shape; the
+    with-skill arm additionally stages the skill directory.
+    """
     claude_plugin_dir = plugin_root / ".claude-plugin"
     claude_plugin_dir.mkdir(parents=True, exist_ok=True)
     manifest: dict[str, Any] = {
@@ -516,9 +528,6 @@ def write_plugin(
         dest_skill_dir = plugin_root / "skills" / skill_name
         dest_skill_dir.mkdir(parents=True, exist_ok=True)
         (dest_skill_dir / "SKILL.md").write_bytes(skill_bytes)
-        manifest["skills"] = [{"name": skill_name, "path": f"skills/{skill_name}"}]
-    else:
-        manifest["skills"] = []
     (claude_plugin_dir / "plugin.json").write_text(
         json.dumps(manifest, indent=2), encoding="utf-8"
     )
@@ -526,11 +535,22 @@ def write_plugin(
 
 
 def write_harness_settings(settings_path: Path) -> None:
-    """Harness-owned project settings; no canary or source content in here."""
+    """Harness-owned project settings; no canary or source content in here.
+
+    Carries the two suppression controls plus the minimal permission allow list
+    for exactly the five required tools. Under ``--permission-mode dontAsk``
+    the runtime denies any tool not on the allow list (the live qualification
+    run denied ``Bash`` and ``Read`` here), so the five eval tools must be
+    explicitly allowed. No user permission settings are imported: this file is
+    the sole permission source for each arm, paired with the unchanged
+    ``dontAsk`` mode. The allow list is intentionally the exact five tools and
+    nothing broader.
+    """
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings = {
         "disableBundledSkills": True,
         "includeGitInstructions": False,
+        "permissions": {"allow": list(EXPECTED_TOOLS)},
     }
     settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
 
@@ -1425,6 +1445,32 @@ def check_canary_leakage(events: list[dict[str, Any]]) -> tuple[bool, list[str]]
     return len(issues) == 0, issues
 
 
+def validate_tool_set(tools: Any) -> tuple[bool, str | None]:
+    """Require exactly the expected five tools as a duplicate-free set.
+
+    The ``--tools`` argv preserves a fixed order (``Skill,Read,Write,Edit,
+    Bash``), but Claude Code 2.1.218 reports the runtime tool list in its own
+    (alphabetical) order regardless of the argv order. Validate the exact
+    duplicate-free set rather than positional equality, while still rejecting
+    missing, extra, duplicate, and non-string entries.
+    """
+    expected = set(EXPECTED_TOOLS)
+    if not isinstance(tools, list):
+        return False, "tools is not a list"
+    for tool in tools:
+        if not isinstance(tool, str):
+            return False, f"non-string tool entry: {tool!r}"
+    if len(tools) != len(expected):
+        return False, f"tool count {len(tools)} != {len(expected)}"
+    if len(set(tools)) != len(tools):
+        return False, "duplicate tool entries"
+    if set(tools) != expected:
+        missing = sorted(expected - set(tools))
+        extra = sorted(set(tools) - expected)
+        return False, f"tool set mismatch (missing={missing}, extra={extra})"
+    return True, None
+
+
 def _is_canary_global_skill(identity: str) -> bool:
     bare = identity.split(":")[-1]
     return bare == FAKE_GLOBAL_SKILL_NAME and (
@@ -1477,8 +1523,9 @@ def validate_arm_events(
     if init.get("mcp_servers") != []:
         errors.append(f"init mcp_servers not empty: {init.get('mcp_servers')!r}")
     tools = init.get("tools", [])
-    if tools != EXPECTED_TOOLS:
-        errors.append(f"init tools {tools!r} != {EXPECTED_TOOLS!r}")
+    tools_ok, tools_err = validate_tool_set(tools)
+    if not tools_ok:
+        errors.append(f"init tools invalid: {tools_err} (got {tools!r})")
 
     # Exact accounted skill sets; reject any non-string skill entry.
     skills = init.get("skills", [])
