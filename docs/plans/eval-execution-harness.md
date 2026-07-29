@@ -149,16 +149,18 @@ The adapter should be deliberately small. It may construct Harbor task files, se
 
 Before migrating a real D7Y suite, prove these properties with a disposable synthetic task.
 
-The first handoff uses Harbor `v0.6.5`, installed with `uv tool install harbor==0.6.5`, and local Docker. Re-qualify if the Harbor version, Docker context, agent integration, or provider changes. Use these initial fixed limits: setup 600 seconds, agent 600 seconds, verifier 120 seconds, 2 CPUs, 4096 MiB memory, and 10240 MiB storage. The task must declare an explicit non-public network policy for setup, agent, and verifier; the exact Claude authentication endpoint allowlist and imported credential key names must be recorded during preflight without recording values. If the selected Claude authentication mechanism cannot operate under an explicit allowlist, stop and return the network decision rather than using Harbor's public default.
+The first qualification targets Harbor `0.20.0` and the local Docker provider. Use a pinned, non-global invocation such as `uvx --from harbor==0.20.0 harbor`; do not silently use a shared latest Harbor installation. Re-qualify if the Harbor version, Docker context, agent integration, provider, or Docker network controller changes. Use these initial fixed limits: setup 600 seconds, agent 600 seconds, verifier 120 seconds, 2 CPUs, 4096 MiB memory, and 10240 MiB storage. Record the Harbor version, Docker client and server versions, storage driver, cgroup/runtime posture, kernel/network prerequisites, image digests, and the exact task schema accepted by the pinned release.
 
-The committed runtime payload for the first D7Y case is exactly: `SKILL.md`, `initiatives/README.md`, `d7y`, and `scripts/check-initiatives.py`, plus the case-declared fixture files. The agent image must not contain the source checkout, eval definitions, expected outcomes, assertions, grader source, benchmark summaries, or harness control files. The verifier image may contain the private checker and expected outcomes and receives only declared outputs and evidence.
+Qualification is split into two gates. Gate A is credential-free Harbor foundation qualification: task loading, explicit network policy, environment injection with a non-secret sentinel, agent/verifier isolation, artifact transfer, and storage enforcement. Gate B is a separately human-approved Claude/API-profile qualification that may use credentials only after its concrete profile is committed outside this plan. No executor may invent a production endpoint, authentication key, upstream model mapping, or proxy evidence mechanism.
+
+The committed runtime payload for the first D7Y case is exactly: `SKILL.md`, `initiatives/README.md`, `d7y`, and `scripts/check-initiatives.py`, plus the case-declared fixture files. `scripts/check-initiatives.py` is a public D7Y capability checker, not the private eval grader. The agent image must not contain the source checkout, eval definitions, expected outcomes, assertions, private grading wrappers, benchmark summaries, or harness control files. The verifier image may contain private assertions, checker/grader wrappers, and expected outcomes and receives only declared outputs and evidence.
 
 ### Environment
 
 - The agent runs inside the intended container, not in the source checkout.
 - The source checkout, host home, host Claude configuration, host skill roots, credentials, and Docker socket are not mounted.
 - The agent user and effective working directory are recorded.
-- CPU, memory, storage, timeout, and network policy are applied or reported as unsupported.
+- CPU, memory, storage, timeout, and network policy are applied. A reported-but-unenforced limit is not qualification evidence.
 - `network_mode` is explicit and never inherited from Harbor's public default.
 - The verifier is a separate environment, contains its private checker, and receives only declared artifacts and evidence.
 - The container is discarded or reset between baseline and treatment.
@@ -195,7 +197,7 @@ The frozen runner demonstrated a configuration failure that must not be reproduc
 
 The Harbor implementation must not read or mount the host `~/.claude/settings.json`. It must generate or materialize a task-scoped Claude configuration bundle inside the agent image or runtime workspace. More importantly, API routing must be a first-class Harbor run input, not an incidental Claude setting:
 
-1. **Harness settings** — a committed, reviewable settings file containing only D7Y-approved behavior controls such as project instruction policy, tool permissions, MCP policy, and persistence settings. It must not inherit user settings.
+1. **Harness settings** — use Harbor's native Claude controls first: pinned agent version, model, permission mode, allowed/disallowed tools, MCP configuration, skills, and environment inputs. A committed settings file is allowed only for controls the native adapter cannot express; a custom adapter that installs it must be separately justified and qualified. It must not inherit user settings.
 2. **Runtime environment** — an explicit allowlist of configuration keys injected by Harbor. Values are supplied through approved runtime secret/configuration inputs, never committed to task files or printed in artifacts. This includes the endpoint/proxy URL and authentication inputs required by the selected API profile.
 3. **Model contract** — a requested model, provider, and effective model identity recorded separately. Any model/provider environment key not explicitly declared for the run is rejected before agent startup.
 4. **API endpoint contract** — the endpoint or proxy identity, configuration digest, upstream provider, and allowed hostnames are recorded. A credential value is never recorded.
@@ -233,11 +235,12 @@ Represent the route as a named, versioned API profile resolved when the Harbor t
 For a direct endpoint or external proxy, the generated task passes the endpoint and
 credential references through Harbor's approved environment interpolation and
 allowlists the exact host. Harbor documents `${HOST_VAR}` interpolation in
-`environment.env`; the qualification must verify the actual Harbor invocation and
-must not place the resolved secret in `task.toml`. The proxy should emit a redacted
-request record (route, requested model, upstream status, and correlation ID) through
-an independently controlled endpoint log or declared artifact. This proves routing
-without exposing the API credential or relying on Claude's final response.
+`environment.env`; Gate A verifies interpolation with a non-secret sentinel, while
+Gate B verifies the human-supplied profile without recording its secret. The proxy
+must emit a redacted request record (route, requested model, upstream status, and
+correlation ID) through an independently controlled endpoint log or declared
+artifact. This proves routing without exposing the API credential or relying on
+Claude's final response.
 
 Harbor's Docker Compose support can add a proxy service, and the `main` agent
 container can reach it by service name. However, Compose services share the task
@@ -262,9 +265,17 @@ The first qualification must prove the external proxy/custom endpoint topology w
 
 Treat the current Claude wrapper branch as a frozen historical attempt. Do not repair or extend its host-side isolation model in this plan.
 
-Record the pinned Harbor version and installation command, Python version, Docker client and daemon versions, selected image digests, selected agent integration, API profile and injection mechanism, network policies, resource limits, Claude authentication mechanism and imported key names, and the exact runtime payload. Keep secrets out of plans, task files, and artifacts. The current environment has Docker client `29.6.2` but no permitted Docker daemon access; this is a preflight blocker until daemon access is granted or another explicitly qualified provider is selected.
+Record the pinned Harbor version and invocation, Python version, Docker client and daemon versions, storage driver, cgroup/runtime and kernel/network prerequisites, selected image digests, selected agent integration, API-profile status, injection mechanism, network policies, resource limits, and the exact runtime payload. Keep secrets out of plans, task files, and artifacts. The current environment has Docker client `29.6.2` but no permitted Docker daemon access; this is a preflight blocker until daemon access is granted or another explicitly qualified provider is selected. Do not install Harbor into shared user tooling as an unrecorded side effect.
 
 **Exit evidence:** a committed implementation prompt can point at this plan, the main branch is the source base, and the chosen Harbor/Docker posture is reproducible by a developer.
+
+### Phase 0A — Qualify Harbor without Claude credentials
+
+Build and run a disposable task using Harbor `0.20.0` and local Docker only. Use a no-op or deterministic test agent for the foundation probe; do not require Claude authentication. Prove the exact `task.toml` fields used by this plan: environment and phase network policies, `environment.env` interpolation with a non-secret sentinel, separate verifier configuration, declared artifacts, and the selected resource controls. Require storage enforcement, not merely a reported storage request. Run positive and deliberately broken variants and classify each failure.
+
+Add a deterministic secret-canary check: inject a known synthetic sentinel only for the foundation probe, scan task files, manifests, logs, and collected artifacts for the sentinel, and fail closed if it appears where it should not. This verifies redaction and collection behavior without using a real credential.
+
+**Exit evidence:** a Harbor `0.20.0` capability record, valid task fixtures, positive and negative results, verified storage boundary, separate-verifier evidence, and a clean secret-canary report. If local Docker cannot enforce storage or the network boundary, Gate A is not qualified.
 
 ### Phase 1 — Prove Harbor isolation with a disposable task
 
@@ -299,9 +310,15 @@ The marker is a qualification probe, not an outcome score.
 
 **Exit evidence:** a valid paired trial whose treatment boundary can be inspected independently of the agent's final response.
 
+### Phase 2A — Supply and approve the Claude/API profile
+
+Before any credentialed run, a human supplies and approves a concrete API profile containing the non-secret endpoint hostname, route kind, exact Harbor allowlist, authentication key name, upstream provider/model mapping, proxy configuration digest, route-evidence source, exact Claude Code version, and secret injection mechanism. The profile is committed as non-secret configuration or recorded in the execution envelope; its values are never invented by the executor. Direct Anthropic routing is acceptable only if the selected endpoint and authentication mechanism are explicitly supplied and route evidence is defined.
+
+**Exit evidence:** an approved profile and a credential injection procedure that does not write secrets to the repository, task files, logs, or artifacts.
+
 ### Phase 3 — Qualify Claude Code through Harbor
 
-Run the synthetic positive and negative prompts with Harbor's Claude Code integration and one explicit API profile. Determine which evidence is genuinely available from Harbor and the integration rather than assumed from the old wrapper:
+Run the synthetic positive and negative prompts with Harbor's Claude Code integration and the approved API profile. Pin and record the exact Claude Code agent version; do not accept Harbor's default installer result as reproducible. Use Harbor's native Claude controls for permission mode, tools, MCP, skills, model, and environment inputs. If a settings file is necessary, implement a small custom adapter only after recording the native-control gap and qualifying that adapter separately. Determine which evidence is genuinely available from Harbor and the integration rather than assumed from the old wrapper:
 
 - target skill availability;
 - target-specific invocation;
@@ -313,7 +330,7 @@ Run the synthetic positive and negative prompts with Harbor's Claude Code integr
 - model and usage telemetry;
 - timeout and error state.
 
-Do not recreate the old host settings/plugin wrapper inside the Harbor task. Implement the explicit task-scoped configuration bundle and API profile above. If the Harbor Claude integration does not expose a supported way to inject the profile's endpoint and credentials, stop and record the integration gap rather than importing host `settings.json` or weakening route checks.
+Do not recreate the old host settings/plugin wrapper inside the Harbor task. Use the Harbor Claude adapter's native controls and the approved API profile. If a required control cannot be expressed natively, stop and record the gap before authorizing a small custom adapter; never import host `settings.json` or weaken route checks.
 
 **Exit evidence:** a Harbor-specific capability record and parser or adapter tests, with unsupported telemetry explicitly listed.
 
