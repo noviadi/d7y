@@ -5,10 +5,26 @@ Skills are executable specifications for stochastic systems. They earn permanenc
 An eval is:
 
 ```text
-realistic prompt → isolated run → trace and artifacts → evidence-backed checks → comparison
+realistic case → Harbor trial pair → trace and artifacts → independent verification → evidence comparison
 ```
 
-A successful example is not an eval. Neither is a static review of `SKILL.md`.
+A successful example is not an eval. Neither is a static review of `SKILL.md`, a valid Harbor task, or a successful agent startup.
+
+This contract describes the D7Y meaning of an eval. Harbor is the first execution substrate and provides the environment, agent lifecycle, resource and network policy, artifact transfer, and verifier isolation. D7Y retains ownership of cases, treatment comparisons, evidence semantics, D7Y-specific checks, and maturity decisions.
+
+## Progressive maturity of the harness
+
+Build and interpret evals in these stages:
+
+1. **Environment foundation** — prove Harbor's container, network, resource, artifact, and separate-verifier boundaries with a disposable synthetic task.
+2. **Treatment foundation** — run an identical baseline and treatment trial, with the target skill injected only into treatment, and record immutable provenance.
+3. **One D7Y case** — verify one positive outcome case using an independent D7Y checker.
+4. **Negative control** — verify that the skill remains available but does not invoke for a materially different prompt.
+5. **Evidence-informed checks** — add only deterministic checks supported by observed Harbor traces and artifacts.
+6. **Coverage and efficiency** — add structurally equivalent variants, observed failure cases, and descriptive cost/latency data.
+7. **Regression, safety, and longitudinal evidence** — add previous versions, held-out cases, safety probes, repeated runs, and cross-revision comparison when skill evolution makes them necessary.
+
+The first stages establish execution compatibility and evidence integrity. They do not establish stable improvement, portability, or skill maturity.
 
 ## Organization
 
@@ -21,45 +37,44 @@ skills/<skill>/
 └── evals/
     ├── evals.json              # committed cases and assertions
     ├── files/                  # committed input fixtures, when needed
-    ├── graders/                # committed skill-specific graders, when needed
-    └── benchmark.json          # latest accepted summary, once evaluated
+    ├── graders/                # verifier-only checks, when needed
+    └── benchmark.json          # accepted summary only after sufficient evidence
 ```
 
 The shared schema lives at `evals/skill-evals.schema.json`.
 
-Run `python3 evals/validate_skill_evals.py` to validate every suite, including fixture paths, unique IDs, and positive and negative invocation coverage.
+Run `python3 evals/validate_skill_evals.py` to validate every suite, including fixture paths, unique IDs, and positive and negative invocation coverage. Schema validation proves only that the definition is well-formed; it is not behavioral evidence.
 
-Raw runs are generated outside skill source:
+Raw Harbor trials and normalized D7Y results are generated outside skill source. The exact Harbor output layout is provider- and version-dependent, so D7Y should retain Harbor output and normalize only the following evidence kinds:
 
 ```text
 evals/runs/<skill>/iteration-<N>/
-├── skill-snapshot/             # version under comparison when needed
-├── <case-id>/
-│   ├── with-skill/
-│   │   ├── trace.jsonl
-│   │   ├── outputs/
-│   │   ├── timing.json
-│   │   └── grading.json
-│   └── baseline/
-│       ├── trace.jsonl
-│       ├── outputs/
-│       ├── timing.json
-│       └── grading.json
-├── benchmark.json
-└── feedback.json
+├── manifest.json               # D7Y case, Harbor, provider, image, agent, and skill provenance
+├── baseline/
+│   ├── harbor-result.json
+│   ├── agent/                  # raw agent logs or trajectory artifacts
+│   ├── artifacts/              # declared outputs
+│   └── verifier/               # separate verifier result and diagnostics
+├── with-skill/
+│   ├── harbor-result.json
+│   ├── agent/
+│   ├── artifacts/
+│   └── verifier/
+├── checks.json
+└── summary.md
 ```
 
-Commit eval definitions, fixtures, graders, and an accepted benchmark summary. Keep raw traces and generated artifacts uncommitted by default; retain or publish them separately when auditability requires it.
+Keep raw trials and generated artifacts uncommitted by default. Retain or publish them separately when auditability requires it. Do not treat Harbor's numeric reward file as the D7Y canonical result; preserve the evidence needed to explain the reward.
 
-## Minimum suite
+## Case contract
 
-Every skill must have `evals/evals.json`. Begin with three realistic cases:
+Every skill must have `evals/evals.json`, but the first executable increment need not contain a full benchmark. Begin with the smallest discriminating set that exercises the current uncertainty:
 
-1. a clear positive invocation;
-2. a materially different or difficult positive branch;
-3. a negative control that should not invoke the skill.
+- one clear positive invocation case;
+- one materially different negative control;
+- additional positive branches or difficult variants only when the first traces show that they reduce an important uncertainty.
 
-Add cases from observed failures, false triggers, skipped steps, regressions, and user corrections. Prefer a small discriminating suite over a large collection of easy prompts.
+Add cases from observed failures, false triggers, skipped steps, regressions, safety concerns, and user corrections. Prefer a small discriminating suite over a large collection of easy prompts.
 
 Each case defines:
 
@@ -67,97 +82,140 @@ Each case defines:
 - a realistic user prompt;
 - whether the skill should trigger;
 - a human-readable expected outcome;
-- optional files to stage into the clean workspace;
+- optional files to stage into the agent environment;
 - focused assertions.
 
-Fixture `source` paths are relative to the skill directory. Fixture `destination` paths are relative to the isolated workspace root. Both must remain inside those roots.
+Fixture `source` paths are relative to the skill directory. Fixture `destination` paths are relative to the task's declared agent workspace. Both must remain inside their intended roots. Eval definitions, expected outcomes, assertions, grader source, benchmark summaries, and harness control files must not be staged into the agent environment.
 
-Do not require assertions to be complete before the first run. Initial outputs often reveal what is both important and observable. Tighten assertions after inspecting the first traces and artifacts.
+Do not require assertions to be complete before the first run. Initial Harbor traces and verifier artifacts reveal what is both important and observable. Tighten assertions only after inspecting those artifacts.
+
+## Harbor execution contract
+
+Each comparison is generated from one immutable case and produces two trials:
+
+```text
+same task, image, prompt, model, tools, permissions, resources, and network
+├── baseline: no target skill
+└── treatment: target skill at an immutable content digest or commit
+```
+
+The first qualified provider is local Docker through Harbor. Every result records the Harbor version, provider, task configuration, image digest, agent integration, model, skill revision, and date. A result scoped to one provider does not prove portability to other Harbor providers or hosts.
+
+The agent environment must use:
+
+- an explicit `no-network` or allowlisted network policy;
+- bounded CPU, memory, storage, and timeout settings;
+- a non-root agent user where supported;
+- no source-checkout, host-home, credential, or Docker-socket mount;
+- a fresh or reset environment for each arm;
+- only declared task inputs and the treatment skill, when applicable.
+
+Use Harbor's separate verifier environment by default. It receives only declared agent outputs and explicitly collected evidence. It must not receive eval definitions, expected outcomes, assertions, grader source, the skill source repository, or harness control files. Shared verifier mode is an exception requiring a recorded reason because it can observe agent-mutated state and installed packages.
+
+Harbor skill injection proves that skill content was made available to the treatment. It does not prove that the agent invoked the skill. Invocation requires a trustworthy runtime-owned signal from the selected agent integration. Final-response wording, skill availability, or a successful outcome alone is insufficient.
+
+If the selected Harbor agent integration cannot expose invocation, the run may produce explicitly scoped outcome evidence only with human approval. It remains unqualified for invocation evaluation and must not be represented as satisfying the full skill contract.
 
 ## What to evaluate
 
-Use a small set of must-pass checks across five dimensions:
+Keep these evidence dimensions distinct:
 
-| Dimension | Question |
-|---|---|
-| Invocation | Did the skill trigger for positive cases and stay out of negative controls? |
-| Process | Did the agent retrieve required context, respect checkpoints, and perform the intended steps? |
-| Outcome | Did it produce the required decision, artifact, or working state? |
-| Quality | Is the result coherent, useful, evidence-aware, and appropriate to the task? |
-| Efficiency | Did the skill avoid unnecessary turns, commands, tokens, time, and permission escalation? |
+| Dimension | Question | Preferred evidence |
+|---|---|---|
+| Environment | Did the declared Harbor boundary actually hold? | Harbor/provider metadata, isolation probes, manifests |
+| Pair validity | Were baseline and treatment equivalent except for the skill? | Task/image/config/skill provenance and leakage checks |
+| Invocation | Did the skill trigger when intended and stay out of negative controls? | Runtime-owned invocation event |
+| Process | Did the agent retrieve required context and perform intended steps? | Trace, tool calls, command results, checkpoints |
+| Outcome | Did it produce the required decision, artifact, or state? | Separate verifier and independent D7Y checker |
+| Quality | Is the result coherent, useful, evidence-aware, and appropriate? | Structured rubric or human review |
+| Efficiency | What did the skill cost? | Duration, tokens, tools, retries, permissions when available |
+| Safety | Did it preserve permission and data boundaries under misuse? | Explicit safety and injection probes |
 
 An assertion declares its dimension and grading kind:
 
-- `deterministic` for mechanically observable facts in traces, files, schemas, or command results;
-- `rubric` for structured model judgment over qualities that code cannot adequately recognize;
+- `deterministic` for mechanically observable facts in traces, files, schemas, verifier results, or command results;
+- `rubric` for structured judgment over qualities that code cannot adequately recognize;
 - `human` for consequential or taste-dependent review that should not be delegated.
 
-Prefer deterministic graders wherever the claim is mechanical. Require concrete evidence for every pass. A heading, claim, or confident explanation is not evidence that the underlying work occurred.
+Prefer deterministic checks wherever the claim is mechanical. Require concrete evidence for every pass. A heading, claim, confident explanation, or Harbor reward value is not evidence that the underlying work occurred.
+
+Keep the result layers separate:
+
+1. **Environment validity** — the Harbor task and provider posture were as declared.
+2. **Pair validity** — baseline and treatment were comparable and leakage-free.
+3. **Treatment evidence** — the skill was available only in treatment and invocation evidence is valid or explicitly unavailable.
+4. **With-skill assertions** — process, outcome, quality, efficiency, and safety requirements for treatment.
+5. **Baseline observations** — comparable facts from the no-skill trial. A baseline failure may demonstrate value and does not by itself invalidate the pair.
+
+An invalid environment or treatment invalidates the comparison. Missing telemetry is `unavailable`, not zero. Missing required artifacts are an evidence error or `ungradable`, never an implicit pass.
 
 ## Running an iteration
 
-For each case:
+For each initial case:
 
-1. Start from a clean workspace and fresh agent context.
-2. Stage only the declared files and repository context.
-3. Run once with the skill version under evaluation.
-4. Run the same prompt and environment against a baseline.
-5. Capture the trace, final response, produced artifacts, duration, token usage, tool calls, and permission level.
-6. Run deterministic graders first.
-7. Apply structured rubric grading only where deterministic evidence is insufficient.
-8. Record specific human feedback where judgment remains necessary.
+1. Resolve the D7Y case, fixtures, skill, and task inputs from an immutable source revision.
+2. Build or select one Harbor task and record its image, provider, agent, model, tools, permissions, network, resources, and timeout posture.
+3. Run the baseline and treatment as fresh Harbor trials with only the declared skill treatment differing.
+4. Capture Harbor results, raw agent logs or traces, final response, produced artifacts, timing, available usage data, and failure state.
+5. Verify required artifacts in a separate Harbor verifier environment.
+6. Run D7Y deterministic checks without repairing agent output.
+7. Apply rubric or human review only where deterministic evidence is insufficient.
+8. Produce a factual comparison summary with unresolved limitations and failure classes.
 
 The baseline is:
 
 - **without skill** when establishing whether a new skill adds value;
-- **previous accepted skill version** when checking an improvement or regression.
+- **previous accepted skill version** only when checking an improvement or regression in a later stage.
 
-Keep model, tools, permissions, input files, and starting repository state equivalent across configurations. For stochastic behavior, repeat cases enough to distinguish a stable improvement from a lucky run. Early suites may use one run per case, but should report raw counts rather than misleading statistical precision.
+The first foundation may run one pair per case. Report raw observations and do not imply statistical stability. Once repeated variants or repeated runs are added, compare patterns across cases and curate successful and failed traces rather than treating every raw trajectory as reusable knowledge.
 
-Use blind comparison for qualitative judgments when practical so the grader does not know which output came from which configuration.
+## Failure semantics
 
-## Host and harness scoping
+Use explicit failure classes so infrastructure problems cannot masquerade as skill failures:
 
-An eval result is a claim about behavior under a specific execution context. Scope every eval claim to the recorded host and harness that produced it:
+- `environment_error` — Harbor task, image, provider, network, resource, user, or container boundary failed;
+- `pair_error` — baseline and treatment were not equivalent or treatment material leaked;
+- `agent_error` — timeout, crash, malformed result, or agent execution failure;
+- `evidence_error` — required trace, artifact, provenance, or telemetry was unavailable or malformed;
+- `verifier_error` — the separate verifier could not execute or interpret its inputs;
+- `assertion_fail` — the environment and evidence were valid, but a required skill assertion failed;
+- `ungradable` — the claim requires unavailable telemetry, rubric judgment, or human review.
 
-- host and harness;
-- host and harness versions;
-- model (and mode if relevant);
-- tools and permissions;
-- configuration and effective instructions;
-- skill revision;
-- date.
-
-Host-specific raw traces are acceptable as evidence. Generated summaries and benchmarks retain D7Y's canonical result semantics, but a summary's portability claim cannot exceed what the underlying host evidence supports. One-host evidence does not prove cross-host portability, and a passing eval on one host does not establish first-class D7Y runtime support on that host. State the host and harness with each reported result; never generalize a one-host eval into a host-neutral or multi-host claim.
+Preserve partial evidence for timeouts, crashes, and collection failures. Do not retry silently or replace a failed trial with a successful one. A rerun is a new iteration with new provenance.
 
 ## Benchmark and maturity
 
-Aggregate results by configuration and dimension. At minimum, record:
+Do not create or accept `benchmark.json` during the environment, treatment, or first-case foundation stages. A factual `summary.md` may report observations and baseline deltas, but it must not recommend maturity.
+
+When sufficient comparative evidence exists, aggregate by configuration and dimension. At minimum, record:
 
 - required assertions passed and failed;
 - false-negative and false-positive invocation counts;
-- per-case failures with evidence;
+- environment, pair, evidence, and verifier failures;
+- per-case failures with concrete evidence;
 - duration and token usage when available;
 - the delta against baseline;
-- unresolved human feedback;
-- model, host and harness with versions, tools and permissions, configuration and effective instructions, date, and skill revision.
+- unresolved rubric and human feedback;
+- Harbor/provider, image, agent, model, tools, permissions, configuration, date, and skill revision.
 
 Skill maturity means:
 
-- `provisional` — cases exist, but comparative runs are incomplete or required checks fail;
-- `evaluated` — all required checks pass and evidence shows material value over the baseline;
-- `regressed` — a previously accepted required check now fails;
+- `provisional` — cases exist, but the Harbor foundation, comparative runs, or required checks are incomplete;
+- `evaluated` — the accepted evidence supports material value over baseline across an appropriate case set and required checks pass;
+- `regressed` — a previously accepted required check now fails under a comparable configuration;
 - `retired` — the skill no longer adds enough value to justify invocation and maintenance cost.
 
-Maturity is an evidence claim, not an author judgment. A skill remains provisional until its accepted benchmark supports promotion.
+One successful pair is never enough for `evaluated`. Maturity is an evidence claim, not an author judgment, and remains subject to appropriate human review.
 
 ## Improving a skill from evals
 
-Use failed assertions, execution traces, and specific human feedback to identify the underlying process failure. Improve the general behavior rather than adding a prompt-specific patch.
+Use failed assertions, execution traces, verifier evidence, and specific human feedback to identify the underlying process failure. Improve general behavior rather than adding a prompt-specific patch.
 
-Remove assertions that pass equally without the skill; they do not demonstrate value. Investigate checks that fail in both configurations before changing the skill. Treat inconsistent results as evidence of a flaky eval, ambiguous instruction, uncontrolled environment, or stochastic behavior requiring repeated runs.
+Remove assertions that pass equally without the skill; they do not demonstrate value. Investigate checks that fail in both configurations before changing the skill. Treat inconsistent results as evidence of a flaky case, ambiguous instruction, uncontrolled environment, agent integration drift, or stochastic behavior requiring repeated variants or runs.
 
-Keep skills lean as coverage grows. Move repeated mechanical work into scripts and deterministic graders rather than expanding prose. Periodically evaluate whether removing instructions preserves or improves results.
+When skill revisions begin, preserve the prior accepted skill snapshot and add held-out cases before claiming regression safety. Curate trajectories by quality, diversity, and difficulty before using them to revise a skill. Do not allow automated skill evolution to silently remove safety constraints or convert unverified traces into canon.
+
+Keep skills lean as coverage grows. Move repeated mechanical work into deterministic capability scripts or verifier checks rather than expanding prose. Periodically evaluate whether removing instructions preserves or improves results.
 
 ## Sources
 
@@ -165,3 +223,8 @@ This contract adapts:
 
 - [Agent Skills — Evaluating skill output quality](https://agentskills.io/skill-creation/evaluating-skills)
 - [OpenAI — Testing Agent Skills Systematically with Evals](https://developers.openai.com/blog/eval-skills)
+- [Harbor task structure](https://www.harborframework.com/docs/tasks)
+- [Harbor agents](https://www.harborframework.com/docs/agents)
+- [Harbor skills and provenance](https://www.harborframework.com/docs/run-jobs/skills)
+- [Harbor artifact collection](https://www.harborframework.com/docs/run-jobs/results-and-artifacts)
+- [Agent Skill Evaluation and Evolution: Frameworks and Benchmarks](https://arxiv.org/html/2606.11435v1)

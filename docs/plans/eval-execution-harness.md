@@ -1,261 +1,402 @@
 ---
-title: Minimal Skill Eval Runner
+title: Progressive Harbor Skill Eval Foundation
 type: feat
 status: todo
-createdAt: 2026-07-26
-updatedAt: 2026-07-27
+createdAt: 2026-07-30
+updatedAt: 2026-07-30
 ---
 
-# Minimal Skill Eval Runner
+# Progressive Harbor Skill Eval Foundation
 
 ## Summary
 
-Implement the smallest local runner that can produce inspectable comparative evidence for D7Y's current skills. For one selected case, it runs the same prompt in fresh isolated workspaces with and without the target skill, captures what happened, applies a few trusted deterministic checks, and records unresolved judgment honestly.
+Replace the brittle host-side Claude Code wrapper with a small Harbor-backed execution foundation for D7Y skill evals.
 
-This is D7Y infrastructure, not a general eval framework. The first increment supports one verified agent executor, a no-skill baseline, sequential runs, and the assertions needed by the current suites. It does not automate qualitative judgment, benchmark acceptance, or skill maturity.
+The first objective is not to build ideal evals, a benchmark service, or a complete agent-runtime abstraction. It is to establish one trustworthy, inspectable execution path in which:
 
-Claude Code 2.1.218 is the selected first executor because a recorded pre-delegation capability spike proved the bounded command and event contract below—not because Claude Code implements the runner. The spike established fresh non-interactive execution, controlled customization and target treatment, a target-specific `Skill` tool event, machine-readable tool and result evidence, and observed runtime metadata under `claude-sonnet-5`. Implement only this proven executor. Do not build a multi-backend abstraction in this increment.
+- a synthetic D7Y case runs in a real isolated environment;
+- the same case can run with and without a target skill;
+- the verifier cannot read the agent's private grading material;
+- failures are classified as environment, agent, evidence, verifier, or skill failures;
+- no result is called a skill improvement or maturity decision prematurely.
 
-Passing the eval-runner gates establishes only compatibility with this bounded eval execution contract. It does not establish complete first-class D7Y runtime support on that host.
+Harbor owns task environments, agent execution, resource and network policy, artifact transfer, and verifier isolation. D7Y owns the eval contract, case definitions, treatment comparison, D7Y-specific checks, provenance, and interpretation.
 
-## Problem Framing
+The current `work/eval-execution-harness` branch is frozen. This plan is the replacement implementation direction for `main`; its prior Claude Code wrapper and live-run evidence remain historical input, not the target architecture.
 
-D7Y already has an evaluation contract, schema, validator, fixtures, and two provisional skill suites. It cannot yet execute them. Static validity therefore risks being mistaken for evidence that a skill invokes correctly or improves an outcome.
+## Problem framing
 
-The next uncertainty is narrower than "how should D7Y run arbitrary evals?":
+D7Y has a useful skill-evaluation contract and provisional suites, but the attempted execution layer coupled isolation, Claude configuration, plugin discovery, permissions, process control, event parsing, workspace staging, and grading into one host-side wrapper. Runtime drift and setup errors can therefore produce structured-looking but dubious evals.
 
-> Can D7Y produce one valid, reproducible with-skill versus no-skill comparison whose evidence is sufficient to inspect and mechanically check?
+The first uncertainty is:
 
-The comparison is invalid if ordinary runtime discovery exposes the target skill to the baseline through the staged workspace, instructions, user-global configuration, plugins, or another skill root. It is also invalid if the harness stages or injects expected outputs, assertions, fixture source directories beyond the declared case inputs, graders, or benchmarks into agent-visible runtime roots. Controlled staging, runtime-state separation, and provenance are therefore required; generic execution and grading extensibility are not.
+> Can D7Y run one honest skill comparison inside a controlled Harbor environment and explain every non-successful result?
 
-This first increment controls the agent context and staged inputs; it is not an OS, filesystem, process, network, or credential sandbox. It does not prove that an adversarial process could not inspect another path readable by the host user. If literal filesystem unreadability or process isolation is required to qualify the selected runtime, stop and make an OS sandbox a separate explicit prerequisite rather than implying that temporary workspaces or CLI permissions provide it.
+The relevant paper insight is that skill contribution should be estimated through paired rollouts with and without the skill, while preserving execution feedback and distinguishing task performance from agent capability. A single pair is compatibility evidence, not stable improvement evidence. The paper also identifies repeated variants, cost and latency, safety, and longitudinal evaluation as important gaps; these belong in later increments rather than in the foundation.
 
-Current deterministic assertions are natural-language claims rather than executable declarations. Define only the structured checks supported by evidence observed in the first real traces. Do not design a broad grader protocol in advance.
+## Governing decisions
 
-## Success Criteria
+### Harbor is the execution substrate, not the D7Y eval model
 
-1. A developer can validate a suite and run one selected case from a committed source revision through a documented Python command under `evals/`.
-2. The case runs once with the target skill and once without it, in separate clean workspaces and fresh agent contexts.
-3. A committed runtime capability record and sanitized parser fixtures establish the selected runtime's declared command posture, prove target-skill availability only in the with-skill configuration, prove a target-specific invocation signal, and distinguish declared controls from runtime-observed skills, tools, model, plugins, MCP servers, permission mode, and unsupported telemetry.
-4. Eval definitions, expected outcomes, assertions, fixture source directories beyond staged case inputs, graders, benchmarks, and harness control files are absent from every staged workspace, runtime skill payload, and runtime-discovered configuration root.
-5. Prompt, declared fixtures, repository seed, model or mode, tools, permissions, and resource limits are equivalent across the pair except for the target skill treatment.
-6. The harness reads run inputs from committed Git objects, never uses the source checkout as a run workspace, does not pass its path to the agent, and records before-and-after source status and selected-object hashes. Fixture traversal, committed symlink escape, and overwrite of harness control files fail before agent execution.
-7. Each run preserves the raw event stream, stderr, exit status, final response, elapsed duration, available usage telemetry, runtime metadata, and retained workspace changes.
-8. A small fixed set of trusted deterministic checks reports `pass`, `fail`, `error`, or `ungradable` with concrete evidence. Missing telemetry is unavailable, not zero.
-9. Pair validity, treatment checks, with-skill assertion results, and baseline observations are reported separately. Rubric and human assertions remain `pending`; a required pending, errored, failed, or ungradable with-skill assertion prevents that case from being represented as passing, while an expected baseline failure does not invalidate an otherwise valid pair.
-10. The generated summary reports observations and baseline deltas but makes no maturity recommendation and does not modify `SKILL.md` or an accepted `benchmark.json`.
-11. At least one positive and one negative `starting-initiatives` case complete both configurations. The D7Y capability installation, target skill installation, target workspace, and process starting directory are distinct; both configurations receive the same recorded capability installation and explicit absolute target root.
-12. Focused tests prove safe fixture handling, additive workspace construction, runtime-state separation, target-skill treatment isolation, source-checkout non-use, and safe failure on malformed executor output or unknown required events.
-13. The implemented command and known runtime limitations are documented, and canonical eval documentation is updated only where actual behavior refines its contract.
+Use Harbor's task, environment, agent, trial, artifact, and verifier concepts where they reduce bespoke infrastructure. Do not make Harbor's numeric reward file, task layout, or agent adapter the canonical D7Y eval schema.
+
+Harbor's local Docker environment is the first qualification target. A remote provider is a later explicitly qualified environment, not an implied portability claim.
+
+### Containers replace host-side isolation claims
+
+The agent must run inside a Harbor environment, not as a direct child process of the developer's host checkout. The selected environment must use an explicit non-public network policy, bounded resources, a non-root agent user where supported, and no host checkout or Docker socket mount.
+
+This establishes isolation within the selected Harbor provider configuration. It does not prove that every Harbor provider, Docker daemon, or privileged host is adversarially secure. D7Y must state the provider and environment configuration with every result.
+
+### Separate the verifier by default
+
+Use Harbor's separate verifier environment. The verifier receives only declared agent outputs and explicitly collected evidence. It must not receive the eval definition, expected outcomes, assertions, grader source, skill source repository, or harness control files.
+
+Harbor documents shared verifier mode as able to see agent-mutated state and installed packages. Shared mode is therefore an explicit exception requiring a written reason.
+
+### Treatment is skill injection, not prompt wrapping
+
+Generate two trials from one immutable case:
+
+```text
+same task, image, prompt, model, tools, permissions, resources, and network
+├── baseline: no target skill
+└── treatment: target skill at an immutable content revision
+```
+
+Use Harbor's skill injection and recorded digest or Git commit where possible. Do not inject D7Y expected outcomes, process instructions, grader details, or target-specific commands into the agent prompt merely to make grading easier.
+
+### Invocation remains a separate evidence question
+
+Harbor proving that a skill was copied into the sandbox proves availability, not invocation. The first implementation must determine whether the Harbor Claude Code integration exposes a trustworthy target-specific invocation signal. If it does not, the run may produce explicitly scoped outcome evidence only after human approval, but it cannot pass D7Y's invocation qualification gate.
+
+### Build in evidence layers
+
+The runner must not begin with a composite score. Each result keeps these layers separate:
+
+1. **Environment validity** — task image, network, user, resources, and provider posture were as declared.
+2. **Pair validity** — baseline and treatment were equivalent except for the skill treatment.
+3. **Treatment evidence** — the skill was available only in the treatment and invocation evidence, if supported, is valid.
+4. **Process evidence** — the agent's trace shows required actions or checkpoints.
+5. **Outcome evidence** — the independent verifier confirms the produced artifact or state.
+6. **Quality and human evidence** — judgment that deterministic checks cannot establish.
+7. **Efficiency observations** — duration, tokens, tool calls, retries, and permission events when available.
+
+Missing telemetry is `unavailable`, not zero. A failed baseline outcome does not invalidate a valid pair; an invalid environment or treatment does.
 
 ## Scope
 
-### In scope
+### In scope for the foundation
 
-- A local Python 3 command under `evals/`, using the standard library where practical.
-- A pre-delegation capability spike followed by exactly one implemented agent executor whose command and event contract are already recorded.
-- Claude Code as the first runtime to probe because it is the first intended product host binding; Amp and Codex are fallbacks for internal eval infrastructure only, not production dependencies selected in advance.
-- A committed Git revision as the source of the suite, fixtures, runtime skill payload, deterministic capability installation, and an allowlisted workspace seed.
-- Separate with-skill and no-skill workspaces with neutral eval instructions.
-- Separate per-run runtime state, plugin or skill roots, and process contexts.
-- One recorded D7Y CLI capability installation exposed identically to both configurations and separately from the target workspace and target skill installation.
-- Sequential execution of one selected case or the cases in one current D7Y suite.
-- Raw evidence capture and a factual per-case comparison summary.
-- Only the trusted built-in deterministic checks required by current suites and supported by observed evidence.
-- Visible pending states for rubric and human assertions.
-- Focused deterministic tests and real runs using synthetic D7Y eval fixtures, not a real discovery initiative.
+- Harbor as the first execution substrate.
+- Local Docker as the first qualified provider.
+- One Harbor task template for synthetic D7Y skill cases.
+- One positive and one negative `starting-initiatives` case, migrated only after the synthetic task works.
+- Baseline and treatment trials generated from the same immutable case inputs.
+- Explicit `no-network` or allowlisted network policy.
+- Separate verifier environment.
+- Declared artifact transfer and fail-closed required-artifact checks.
+- Harbor task, image, agent, skill, and provider provenance.
+- Raw agent logs or traces available to the verifier as declared artifacts.
+- A thin D7Y adapter that translates D7Y cases into Harbor tasks and Harbor results into D7Y evidence layers.
+- Dependency-light D7Y checks for paths, JSON/schema validity, command evidence, and the existing initiative checker.
+- Synthetic fixtures and isolated eval workspaces only.
 
-### Out of scope
+### Deferred until evidence justifies them
 
-- Multiple production executors or a backend registry, plugin API, adapter hierarchy, or runtime discovery mechanism.
-- Previous-version baselines.
-- Arbitrary or skill-local executable graders.
-- Automated rubric judging, judge calibration, blind pair scoring, or grader agents.
-- Repeated-run statistics, claims of stable improvement, or run-order optimization.
-- Benchmark acceptance commands, maturity recommendations, and automatic promotion, regression, or retirement.
-- Parallel or distributed execution, CI integration, scheduling, a service, database, or web UI.
-- Retry orchestration, resumable runs, or an attempt state machine; a rerun simply receives a new output directory.
-- Network-dependent discovery tasks or real initiative creation.
-- Indefinite retention of complete workspaces.
-- Claims of adversarial filesystem, process, network, credential, or host-user isolation without a separately approved OS sandbox.
-- A top-level `d7y eval` product capability; this runner is contributor infrastructure.
+- A second executor or provider.
+- A generalized executor interface.
+- A top-level `d7y eval` product command.
+- Arbitrary skill-local executable graders.
+- Automated rubric or judge agents.
+- Reward optimization or reinforcement learning.
+- Parallel scheduling, a service, database, or web UI.
+- Automatic maturity promotion, regression retirement, or benchmark acceptance.
+- Full multi-run statistics and run-order optimization.
+- Multimodal or long-horizon benchmark infrastructure.
+- Skill retrieval, routing, compression, or library-level evaluation.
 
-## Design
-
-### Execution flow
+## Target architecture
 
 ```text
-evals.json + committed source revision
+committed D7Y eval case and skill revision
                  │
                  ▼
-validate suite and verified executor capability
+       D7Y Harbor task builder
                  │
+       ┌─────────┴─────────┐
+       ▼                   ▼
+ baseline task        treatment task
+ no skill             immutable skill
+       │                   │
+       └─────────┬─────────┘
                  ▼
-build equivalent isolated workspace pair
+          Harbor environment
+       container, network, limits
                  │
-        ┌────────┴────────┐
-        ▼                 ▼
-with-skill            no-skill
-runtime payload       target instructions absent
-        │                 │
-        ▼                 ▼
-fresh agent process   fresh agent process
-        └────────┬────────┘
-                 ▼
-capture raw events, final response, timing, and changed files
+          Claude Code agent
                  │
-                 ▼
-trusted deterministic checks; rubric and human checks pending
+        declared artifacts/traces
                  │
-                 ▼
-factual comparison summary with no maturity decision
+          separate verifier
+                 │
+          D7Y evidence report
 ```
 
-### Executor selection gate
+The adapter should be deliberately small. It may construct Harbor task files, select the Harbor agent, collect trial metadata, and normalize evidence. It must not reimplement container isolation or duplicate Harbor's process lifecycle.
 
-Before creating a concrete implementation prompt or task worktree, Amp and the human used a disposable synthetic skill and positive and negative prompts to probe Claude Code. The spike demonstrated:
+## Harbor qualification contract
 
-1. fresh non-interactive contexts with no session reuse;
-2. declared project-only settings, separate runtime state, empty MCP configuration, and runtime-observed skills, plugins, tools, model, and permission mode;
-3. the target skill present exactly once with-skill and absent from every baseline skill root;
-4. positive and negative invocation observable from a documented event or other runtime-owned signal rather than final-response wording;
-5. machine-readable tool activity and final response capture;
-6. a controlled synthetic-probe tool and permission set and honest documentation of any host-readable paths that are not technically sandboxed;
-7. runtime-observed model, effective skill set, plugins, MCP servers, tools, permission mode, result, and available usage metadata sufficient to scope the synthetic result.
+Before migrating a real D7Y suite, prove these properties with a disposable synthetic task:
 
-The spike did not directly observe effective instructions, hooks, auto-memory, session-persistence behavior, effort, hidden cache provenance, or all mutable host state. Treat the corresponding flags, settings, configuration-root paths, and file hashes as declared invocation inputs rather than runtime-reported facts. The first vertical slice must use suppression canaries to test instruction and global-skill leakage and must stop on a failed canary.
+### Environment
 
-The selected Claude Code 2.1.218 executor contract is:
+- The agent runs inside the intended container, not in the source checkout.
+- The source checkout, host home, host Claude configuration, host skill roots, credentials, and Docker socket are not mounted.
+- The agent user and effective working directory are recorded.
+- CPU, memory, storage, timeout, and network policy are applied or reported as unsupported.
+- `network_mode` is explicit and never inherited from Harbor's public default.
+- The verifier is a separate environment and receives only declared artifacts.
+- The container is discarded or reset between baseline and treatment.
 
-- launch each arm as a new process with a distinct temporary `CLAUDE_CONFIG_DIR` and `--no-session-persistence`;
-- use `--setting-sources project` plus a harness-owned `--settings` file that sets `disableBundledSkills: true` and `includeGitInstructions: false`;
-- construct a scrubbed child environment from a minimal platform base and the top-level string-to-string `env` object in the current user's `~/.claude/settings.json`, recording the source and retained key names but never values; apply imported values first and then override harness-owned `CLAUDE_CONFIG_DIR`, `PWD`, capability `PATH`, temporary-directory, and related control variables; do not load user permissions, hooks, model, effort, plugins, skills, or other settings; fail before launch if any retained value exposes the source checkout, skill source, or eval source path;
-- use a session-only `--plugin-dir` payload containing the target skill with-skill and an equivalent empty plugin baseline;
-- invoke `--print --verbose --output-format stream-json --no-session-persistence`, `--strict-mcp-config --mcp-config '{"mcpServers":{}}'`, `--permission-mode dontAsk`, `--model claude-sonnet-5`, and `--effort low`; use exactly `Skill` for the synthetic parser contract and exactly `Skill,Read,Write,Edit,Bash` in both arms of the first real slice, stopping rather than broadening the set if that slice cannot run;
-- resolve the executable once, require `claude --version` from that executable to report `2.1.218`, and record its path and version separately from the event stream;
-- accept an arm only when `system.init` reports the exact requested model, empty MCP servers, the exact tool set, the expected session plugin, the target skill present only with-skill, and no unexpected skill beyond the built-in `doctor` observed in both arms;
-- prove automatic invocation only from an assistant `tool_use` content block whose `name` is `Skill` and whose `input.skill` equals the namespaced target; use the absence of that event for the with-skill negative control and baseline treatment evidence;
-- take final response, available usage, actual model/provider, turn count, permission denials, and terminal status from the `result` event, failing safely when required fields or event shapes differ; measure elapsed duration around the child process with a monotonic clock because the observed result event did not expose it;
-- enforce a ten-minute timeout per arm by terminating the child process group, waiting five seconds, then killing the group if needed; retain an explicit timeout result and partial stdout and stderr.
+### Treatment
 
-`--bare` was rejected for the runner contract: it suppressed project and user customization and exposed session-plugin availability, but only guaranteed explicit `/plugin:skill` expansion and did not expose the `Skill` tool needed for automatic invocation. `--safe-mode` disables skills and cannot be the with-skill posture. `--disable-slash-commands` remains unsuitable as an asymmetric baseline treatment. The `sonnet` alias resolved to `glm-4.7` in this environment, so the selected contract uses the full `claude-sonnet-5` identifier and verifies the actual model in both init and result evidence.
+- The baseline has no target skill content.
+- The treatment has exactly the target skill content at a recorded digest or commit.
+- Eval definitions, expected outcomes, assertions, grader source, and harness controls are absent from both agent environments.
+- A suppression canary proves that an untrusted or unintended global skill/instruction is not silently influencing the trial, where the Harbor agent integration exposes such state.
+- A failed treatment-boundary check invalidates the pair before outcome interpretation.
 
-A skill listing or initialization record proves availability, not invocation. Qualification requires a runtime-owned event that uniquely identifies use of the target skill for the positive prompt and its absence for the negative prompt; final-response wording and a good outcome prove neither. If Claude Code fails a core isolation or observability gate, record the failed gate and return the decision to Amp and the human before probing Amp or Codex strictly as internal eval infrastructure. Stop if no installed runtime can support an honest comparison.
+### Execution and evidence
 
-The selected runtime's command construction and event parsing may live in one clearly named module or function. Do not introduce a common executor interface until a second runtime is actually required.
+- The Harbor Claude Code integration can run non-interactively with a bounded timeout.
+- Agent stdout, stderr, exit status, tool activity, final response, and available usage data are retained.
+- A timeout or malformed agent result produces an explicit infrastructure error and preserves partial evidence.
+- Required artifact collection is verified by the separate verifier; Harbor's best-effort collection behavior must not turn missing evidence into success.
+- Invocation is either observed from a runtime-owned signal or explicitly marked unavailable.
 
-### Workspace and treatment boundary
+### Qualification outcome
 
-Resolve the selected Git ref to a commit first and read all run inputs from that immutable object, not partly from the working tree. Record the source checkout status and relevant object hashes before and after execution, but never use that checkout as an agent workspace or capability installation.
+The qualification result is one of:
 
-Build both workspaces additively from the same allowlisted repository seed. For the first `starting-initiatives` slice, begin with the committed initiative organization contract, identical neutral eval instructions, and declared fixtures; do not copy a broad checkout and attempt to subtract agent-readable material. Add the smallest structured repository-context declaration needed to make that seed explicit and validate every source and destination before staging.
+- `qualified` — all required foundation gates passed;
+- `qualified-with-bounded-evidence` — execution and outcome evidence work, but invocation or another non-required signal is unavailable;
+- `not-qualified` — the environment, treatment boundary, or evidence contract cannot be trusted.
 
-Create separate per-configuration plugin or skill roots and runtime-state directories. Install a runtime payload only for the with-skill agent containing `SKILL.md` and execution-time references; give the baseline an equivalent empty treatment location. Never include `evals/`, fixture sources, expected outcomes, assertions, graders, benchmarks, or harness control files in either runtime payload or runtime-discovered root.
+Only `qualified` supports the full D7Y invocation contract. No qualification outcome promotes a skill or establishes stable improvement.
 
-Materialize one minimal D7Y capability installation from the selected source commit, containing the `d7y` façade and shared initiative implementation. Expose that exact installation on `PATH` identically to both configurations while keeping it separate from the target workspace, target skill installation, process starting directory, and source checkout. For `starting-initiatives`, record the resolved executable and source revision, run from a third directory, pass the target workspace as an explicit absolute `--root`, and capture arguments, exit status, and JSON result. Do not expose the source checkout's `./d7y` directly.
+## Progressive implementation sequence
 
-The run manifest records controllable inputs and the declared treatment delta. It does not claim that stochastic outputs, timestamps, service conditions, or generated identifiers are identical.
+### Phase 0 — Freeze and reset the implementation direction
 
-### Minimal checks and result semantics
+Treat the current Claude wrapper branch as a frozen historical attempt. Do not repair or extend its host-side isolation model in this plan.
 
-Inspect the first captured traces before changing the eval schema. Then add only the declarations needed for observed, mechanically verifiable facts. Initial trusted checks may include:
+Record the Harbor version, Python version, Docker version, selected image digest, selected agent integration, and provider configuration used by qualification. Keep secrets out of plans, task files, and artifacts.
 
-- verified target-skill invocation event, if the runtime exposes one;
-- command occurrence and exit result;
-- path existence, absence, or count;
-- JSON or schema validity;
-- the existing initiative checker result.
+**Exit evidence:** a committed implementation prompt can point at this plan, the main branch is the source base, and the chosen Harbor/Docker posture is reproducible by a developer.
 
-Checks are harness-owned Python functions, not executable plugins. They inspect retained artifacts without repairing them and return a status plus concrete paths, events, command results, or diagnostics as evidence.
+### Phase 1 — Prove Harbor isolation with a disposable task
 
-Keep four result layers distinct:
+Create one synthetic task that has no D7Y semantics. The agent attempts to read canary files, write an artifact, inspect its environment, and finish. The verifier checks:
 
-1. **Pair validity** fails on treatment leakage, parity failure, uncontrolled runtime state, a missing configuration, or malformed required executor evidence.
-2. **Treatment checks** prove target availability with-skill and absence in the baseline; they are harness-owned rather than authored baseline outcome assertions.
-3. **With-skill assertions** apply the case's invocation, process, outcome, quality, and efficiency requirements. Positive invocation checks require the target event; negative controls require its absence even though the target is available.
-4. **Baseline observations** report comparable process and outcome facts. A baseline failure may demonstrate skill value and does not by itself invalidate the pair.
+- host/source paths are not available;
+- only declared task files are present;
+- network behavior matches the explicit policy;
+- agent and verifier filesystems are distinct;
+- declared artifacts arrive at the verifier;
+- missing required artifacts fail verification;
+- timeout and non-zero agent exits retain evidence.
 
-The trace-backed assertion that the agent ran `d7y initiatives list` before matching and `check` after creation is separate from an independent harness-run post-execution initiative check. The latter proves outcome validity, not that the agent followed the skill process.
+Do not add Claude skill invocation assertions yet. This phase tests Harbor and the task boundary, not skill quality.
 
-An executor without observable invocation does not pass qualification. Only if the human explicitly approves an outcome-only run may invocation assertions be `ungradable`; such a run cannot satisfy this plan's invocation success criteria. Rubric and human assertions remain `pending`. The summary may say that the observed with-skill run outperformed the observed baseline on particular checks, but one pair is insufficient for a stable improvement or maturity claim.
+**Exit evidence:** a report with positive and negative isolation observations, provider-scoped limitations, and a clear failure classification for each deliberately broken variant.
 
-### Command ownership
+### Phase 2 — Prove paired skill treatment
 
-Expose the first increment through one documented Python entry point under `evals/` and document it in `DEVELOPMENT.md`. Do not add a top-level `d7y eval` command: skill evaluation is contributor infrastructure, while top-level `d7y` commands are user-facing deterministic capabilities. If later use justifies a façade, add it under `d7y dev` in a separate change rather than duplicating runner behavior.
+Extend the synthetic task with a disposable skill that emits a unique, harmless runtime marker when used. Generate baseline and treatment trials from identical task inputs.
 
-### Artifacts
+Check that:
 
-Follow the existing `evals/runs/<skill>/iteration-<N>/` shape where practical. Add only the files needed to inspect the run, likely:
+- the treatment can access the skill;
+- the baseline cannot access the skill;
+- the marker is absent from the baseline;
+- the skill digest and task/image digests are recorded;
+- no task or verifier material leaks into either arm;
+- treatment differences are limited to the declared skill injection.
 
-- an iteration manifest;
-- per-configuration raw event stream and stderr;
+The marker is a qualification probe, not an outcome score.
+
+**Exit evidence:** a valid paired trial whose treatment boundary can be inspected independently of the agent's final response.
+
+### Phase 3 — Qualify Claude Code through Harbor
+
+Run the synthetic positive and negative prompts with Harbor's Claude Code integration. Determine which evidence is genuinely available from Harbor and the integration rather than assumed from the old wrapper:
+
+- target skill availability;
+- target-specific invocation;
+- tool calls and command results;
 - final response;
-- timing and available usage data;
-- retained changed files or a workspace-change manifest;
-- deterministic check results;
-- one factual case or iteration summary.
+- model and usage telemetry;
+- timeout and error state.
 
-Raw runs remain ignored. Update `docs/skill-evaluations.md` in the implementation change if the proven artifact layout differs from its current example. Do not create an acceptance workflow around `benchmark.json`.
+Do not recreate the old settings/plugin wrapper inside the Harbor task unless a specific Harbor integration gap requires a bounded adapter and the gap is recorded.
 
-Commit the capability record and small sanitized event fixtures needed to test the selected runtime parser. Do not commit raw model traces or credentials merely to preserve the spike.
+**Exit evidence:** a Harbor-specific capability record and parser or adapter tests, with unsupported telemetry explicitly listed.
 
-## Implementation Sequence
+### Phase 4 — Migrate one D7Y outcome case
 
-### 0. Pre-delegation Claude Code capability spike — complete
+Migrate only the positive `starting-initiatives` creation case. Keep the case small and use the independent D7Y initiative checker in the separate verifier.
 
-Amp ran a disposable positive and negative synthetic skill case through Claude Code with controlled settings, separate runtime state, and session-only skill installation. The spike did not run through `scripts/delegate-claude.sh`; that launcher governs implementation handoffs and is not the eval executor. The selected contract is recorded above and sanitized parser constructions live under `evals/fixtures/claude-code-2.1.218/`.
+The agent environment receives only:
 
-Observed evidence: the positive arm emitted a target-specific `Skill` tool event and `D7Y-PROBE:THETA-2`; the equivalent empty-plugin arm exposed no target skill or target event; the with-skill negative prompt exposed the target but emitted no target event. Runtime events reported `claude-sonnet-5`, empty MCP, fresh session IDs, `dontAsk`, and the configured tools. No persistence and low effort were supplied command controls, not runtime-reported facts. Project-only execution required importing the reviewed top-level user environment because isolated configuration otherwise failed authentication. The unavoidable `doctor` skill remained visible identically in both arms. Claude's native `plugin eval` command was present but unavailable behind an early-access gate and is not part of the implementation contract.
+- the case instruction;
+- the declared synthetic repository seed;
+- declared fixture inputs;
+- the D7Y capability needed by the case;
+- the treatment skill in the treatment arm.
 
-The committed JSONL files are sanitized parser constructions based on the observed event shapes, not verbatim raw traces or independent capability evidence. They preserve behavior-critical target, non-target, model, plugin, tool, permission, MCP, session, result, and usage structure while replacing volatile identifiers and paths and omitting sensitive values. The capability claim rests on the live spike summarized here; parser fixtures only make that selected shape testable.
+The verifier receives only the declared initiative output and required trace or command artifacts. It independently runs the checker and reports outcome evidence separately from process evidence.
 
-Unsupported or bounded claims: no adversarial filesystem/process isolation was established; no timeout or malformed-stream behavior was exercised against the live CLI; instruction, global-skill, and hidden-state suppression still require vertical-slice canaries; the negative prompt was not run under the final restricted synthetic tool list; and the real `starting-initiatives` tool set and D7Y capability binding remain implementation qualification work. The first real pair must stop if its fixed tools, permissions, D7Y command binding, canaries, or process-tree timeout do not work. One positive and one negative synthetic run establish compatibility, not stochastic reliability or first-class binding status.
+**Exit evidence:** one inspectable baseline/treatment pair, with source checkout unchanged and every non-success classified.
 
-### 1. Paired capture vertical slice
+### Phase 5 — Add the negative invocation control
 
-Implement committed-ref resolution, additive workspace construction, neutral instructions, separate runtime state, the proven runtime payload contract, the recorded D7Y capability installation, sequential execution, and raw artifact capture. Run the positive `starting-initiatives` creation case in both configurations. Ensure eval material is absent from staged and runtime-discovered roots and the capability installation is available identically to both configurations.
+Migrate a materially different prompt that should not invoke `starting-initiatives`. Run it in both arms. The treatment may have the skill available, but must not invoke it for the negative control.
 
-**Complete when:** both runs are inspectable, the target treatment is proven, changed files are retained, malformed stream and timeout states fail explicitly, and the source checkout is unchanged.
+**Exit evidence:** positive and negative invocation behavior is reported separately from outcome behavior. If invocation is unavailable through Harbor, stop the full invocation qualification and record the bounded outcome-only capability instead of inferring invocation.
 
-### 2. Evidence-informed deterministic checks
+### Phase 6 — Add evidence-informed deterministic checks
 
-Inspect the captured events and outputs, define the smallest structured check declarations they support, and update the schema, validator, and current suites consistently. Implement only trusted built-ins required by the current cases. Keep unsupported deterministic assertions `ungradable` and rubric or human assertions `pending`.
+Only after inspecting real Harbor traces, add the smallest D7Y check declarations supported by stable evidence. Initial checks may include:
 
-**Complete when:** every executed deterministic declaration resolves to a known built-in, every result cites evidence, unsafe declaration parameters fail validation, and the summary can be regenerated from captured artifacts.
+- target invocation event, if available;
+- command occurrence and exit result;
+- required output path existence or absence;
+- JSON/schema validity;
+- independent `d7y initiatives check` result;
+- required artifact presence;
+- environment and treatment provenance.
 
-### 3. Current-suite proof and documentation
+Checks are harness-owned and inspect artifacts without repairing them. Each result cites concrete evidence. Rubric and human assertions remain visibly pending.
 
-Run at least the positive creation case and negative naming control through both configurations. Document validation, one-case execution, suite execution if implemented, artifact inspection, and known runtime limitations. Align `docs/skill-evaluations.md` with proven behavior without accepting a benchmark or changing maturity.
+**Exit evidence:** summaries can be regenerated from retained artifacts and cannot call a run passing when required evidence is missing.
 
-**Complete when:** focused tests pass, the two comparative cases produce factual summaries, source safety is demonstrated, and the documentation distinguishes schema validation, an observed run, and evidence sufficient for a maturity decision.
+### Phase 7 — Expand coverage conservatively
 
-Focused acceptance cases must include suppression canaries for user or project instructions and a fake global skill; target availability only with-skill; positive target invocation only with-skill; no target invocation for the negative control; an allowlisted seed manifest; absence of eval and control material from staged and runtime roots; the recorded `d7y` capability path and absolute target root; separate agent-command and independent post-run checker evidence; safe rejection of traversal, committed symlinks, control-path collisions, malformed streams, and unknown required events; and timeout termination of the complete child process tree with an explicit retained timeout result.
+After the foundation is reliable, add the second current suite and then small structurally equivalent variants. Vary inputs and irrelevant context rather than merely duplicating prompts. Report raw per-case results and aggregate counts; do not manufacture statistical precision from a tiny suite.
 
-## Risks and Stop Conditions
+At this phase, begin recording efficiency observations—duration, available tokens, tool calls, permission events, and recovery attempts—without making fragile hard thresholds the primary acceptance rule.
 
-- **Claude Code cannot isolate global state:** do not weaken the baseline; record the failed gate and return the decision to Amp and the human before probing the next runtime strictly as internal eval infrastructure.
-- **Invocation is not observable:** do not accept self-report as evidence. An invocation-observability failure is a failed qualification gate: record it and return the decision to Amp and the human before probing another host strictly as internal eval infrastructure. If the human explicitly approves an outcome-only run, it may produce scoped outcome evidence, but it remains unqualified for invocation evaluation and must not be represented as passing the executor qualification gate.
-- **Eval leakage:** fail before execution if a staged workspace, runtime payload, or runtime-discovered root contains eval definitions, assertions, graders, expected outcomes, benchmarks, fixture source directories, or harness control files.
-- **Instruction leakage:** fail the comparison when effective instruction or skill sources cannot be enumerated or suppressed sufficiently to prove the treatment.
-- **D7Y capability binding is unavailable:** do not substitute a repository-relative checker or the source checkout's executable. Stop if an equivalent recorded capability installation cannot be exposed to both configurations independently of the target workspace.
-- **Skill resource paths break after installation:** make the runtime payload portable before continuing; do not repair it by exposing skill-source or eval directories.
-- **Isolation requirement expands:** if trusted controlled staging is insufficient and literal host-path unreadability is required, stop and return an explicit OS-sandbox decision rather than extending the runner implicitly.
-- **Model or CLI drift:** capture versions and keep small parser fixtures from the capability spike; fail safely on unknown required event shapes.
-- **Stochastic overclaim:** report raw observations from a single pair, never stable improvement or maturity.
-- **Scope growth:** defer any second executor, arbitrary grader, rubric agent, lifecycle manager, or service until observed D7Y eval failures demonstrate the need.
+**Exit evidence:** the suite demonstrates reuse across multiple cases and exposes false triggers, skipped steps, and common failure modes.
 
-## Sources and Current Inputs
+### Phase 8 — Add regression, safety, and longitudinal evidence
 
-- `AGENTS.md` — workbench-development constitution.
+Only when skill revisions are being made from eval feedback, add:
+
+- a previous accepted skill snapshot;
+- held-out cases for regression;
+- explicit safety and prompt-injection controls;
+- repeated runs sufficient to distinguish a stable pattern from a lucky run;
+- longitudinal reports across skill revisions.
+
+Safety failures remain separate hard gates. A skill must not gain utility credit by weakening permission, data-protection, or instruction-boundary behavior.
+
+This phase is where the paper's recommendations about multi-run trajectory comparison, held-out evaluation, cost/latency, safety, and evolution tracking become operational. It is intentionally not part of the initial Harbor foundation.
+
+## Artifact and result contract
+
+Each paired iteration should retain or reference:
+
+- D7Y case and suite commit IDs;
+- skill commit and content digest;
+- Harbor version and task/job configuration;
+- environment/provider and image digest;
+- agent integration and model configuration;
+- baseline/treatment distinction;
+- network, user, resource, and timeout posture;
+- task and verifier manifests;
+- raw agent stdout/stderr or trajectory artifact;
+- final response and available usage telemetry;
+- declared workspace/output artifacts;
+- verifier result and independent D7Y checker result;
+- environment, pair, treatment, process, outcome, quality, and efficiency evidence;
+- failure class and diagnostic;
+- unresolved limitations.
+
+Suggested output shape:
+
+```text
+evals/runs/<skill>/iteration-<N>/
+├── manifest.json
+├── baseline/
+│   ├── harbor-result.json
+│   ├── agent/
+│   ├── artifacts/
+│   └── verifier/
+├── with-skill/
+│   ├── harbor-result.json
+│   ├── agent/
+│   ├── artifacts/
+│   └── verifier/
+├── checks.json
+└── summary.md
+```
+
+The exact Harbor output layout may differ. D7Y should normalize only the canonical evidence kinds above and should not duplicate all Harbor internals.
+
+## Failure taxonomy and stop conditions
+
+- **Harbor unavailable or version incompatible:** stop; do not silently fall back to the old wrapper.
+- **Container boundary cannot be demonstrated:** stop the isolation phase and record the provider limitation.
+- **Network policy is implicit or public:** fail qualification until explicitly configured.
+- **Host checkout or credentials are mounted:** fail the task before agent execution.
+- **Shared verifier is used accidentally:** fail the pair; do not interpret its result.
+- **Skill treatment leaks into baseline:** fail pair validity.
+- **Required artifact is absent:** report evidence error or ungradable; never success.
+- **Claude invocation is not observable:** mark invocation unavailable and do not claim invocation success.
+- **Harbor agent integration changes its trace contract:** preserve raw evidence, update the bounded adapter only after a new capability check, and invalidate unsupported parser assumptions.
+- **Agent timeout or crash:** retain partial logs and classify as agent infrastructure failure, not skill failure.
+- **Verifier failure:** distinguish verifier/environment failure from an agent-produced invalid outcome.
+- **Stochastic variation:** report observations; do not promote maturity from one pair.
+- **Scope growth:** add no abstraction, provider, grader, or orchestration layer without a demonstrated current failure requiring it.
+
+## Verification requirements
+
+Documentation and plan work must verify paths, terminology, Harbor links, and consistency with D7Y canon.
+
+The implementation must, in progressive order, verify:
+
+1. Harbor task parsing and local Docker startup.
+2. Positive and negative isolation probes.
+3. Separate verifier and required artifact behavior.
+4. Baseline/treatment skill provenance and leakage controls.
+5. Claude Code execution and error capture through Harbor.
+6. One positive D7Y case and one negative control.
+7. Regeneration of summaries from retained artifacts.
+
+Static task validation is not behavioral evidence. A successful Harbor startup is not skill evidence. A successful single run is not stable improvement evidence. A valid benchmark summary is not a maturity decision without comparative and human-appropriate evidence.
+
+## Sources and current inputs
+
+- `AGENTS.md` — workbench-development constitution and implementation boundaries.
 - `docs/discovery-workbench.md` — thin-harness, fat-skills, deterministic-foundation architecture.
-- `docs/discovery-workbench-principles.md` — evidence and autonomy principles.
-- `docs/skill-evaluations.md` — canonical skill evaluation and maturity contract.
-- `docs/plans/runtime-initiative-cli.md` — completed initiative capability contract and deferred binding evidence.
-- `docs/plans/auditable-claude-delegation.md` — development launcher evidence and its explicit non-sandbox boundary.
+- `docs/discovery-workbench-principles.md` — evidence, uncertainty, autonomy, and trace/canon principles.
+- `docs/skill-evaluations.md` — D7Y skill-evaluation contract and maturity semantics.
 - `evals/skill-evals.schema.json` — current suite schema.
 - `evals/validate_skill_evals.py` — current dependency-free validator.
-- `skills/starting-initiatives/evals/evals.json` — first vertical-slice suite.
-- `skills/writing-great-skills/evals/evals.json` — second current suite to migrate after the check declaration is proven.
-- `scripts/check-initiatives.py` — shared deterministic initiative capability used by the first case (exposed via `d7y initiatives list`/`check`).
-- [Agent Skills — Evaluating skill output quality](https://agentskills.io/skill-creation/evaluating-skills)
-- [OpenAI — Testing Agent Skills Systematically with Evals](https://developers.openai.com/blog/eval-skills)
+- `skills/starting-initiatives/evals/evals.json` — first synthetic D7Y suite.
+- `skills/writing-great-skills/evals/evals.json` — later current suite.
+- `scripts/check-initiatives.py` — independent initiative checker capability.
+- [Harbor motivation](https://www.harborframework.com/docs) — task, environment, agent, and provider model.
+- [Harbor core concepts](https://www.harborframework.com/docs/core-concepts) — task, trial, job, agent, and container concepts.
+- [Harbor task structure](https://www.harborframework.com/docs/tasks) — resources, network policy, environments, artifacts, and verifier isolation.
+- [Harbor agents](https://www.harborframework.com/docs/agents) — Claude Code integration and custom agent boundaries.
+- [Harbor skills](https://www.harborframework.com/docs/run-jobs/skills) — skill injection and content provenance.
+- [Harbor artifact collection](https://www.harborframework.com/docs/run-jobs/results-and-artifacts) — artifact and sidecar evidence behavior.
+- [Agent Skill Evaluation and Evolution: Frameworks and Benchmarks](https://arxiv.org/html/2606.11435v1) — paired rollout comparison, execution feedback, multi-run trajectories, safety, cost/latency, and longitudinal gaps.
+
+## Completion boundary
+
+This plan is complete only when the Harbor foundation and one paired D7Y case are inspectable and their limitations are explicit. It is not complete merely because Harbor is installed, a task validates, or Claude Code returns a response.
+
+The plan must not declare a skill `evaluated`, update an accepted `benchmark.json`, or recommend maturity until the canonical skill-evaluation contract has sufficient comparative evidence and the appropriate human review.
