@@ -264,6 +264,17 @@ Focused acceptance cases must include suppression canaries for user or project i
 
 ### Execution posture
 
+Seventh incremental correction (final-review blockers), on branch
+`work/eval-execution-harness`, base `7f4e91d`. Two final-review blockers in the
+retained-evidence and check-semantics contracts, both reproduced against the
+authoritative live artifacts at
+`/tmp/d7y-live-positive-20260729-model-full/` (`jq empty` failed on both
+`trace.jsonl` files with `Invalid numeric literal`, because numeric fields such
+as `estimated_tokens` became bare `<redacted>` tokens). No runner or plan
+redesign; no scope expansion; no change to the `--model claude-sonnet-5`
+contract, plugin, permission, prompt, D7Y command, assertion, or baseline
+semantics.
+
 Sixth incremental correction (process-evidence contract), on branch
 `work/eval-execution-harness`, base `9d9a33b`. The process assertion requires
 every Bash tool use to have exactly one later result and requires exactly one
@@ -278,9 +289,36 @@ Fifth incremental correction (live-binding defect pass), on branch `work/eval-ex
 
 ### Files changed (this correction)
 
-- `evals/run_eval.py` — `write_plugin` now emits the Claude Code 2.1.218 metadata-only plugin manifest (`name`/`version`/`description`) and no longer declares a `skills` array; the target skill is discovered via the `skills/<name>/SKILL.md` filesystem layout. `write_harness_settings` adds a `permissions.allow` list of exactly the five required tools alongside the unchanged `dontAsk` mode. A new `validate_tool_set` validates runtime-reported tools as a duplicate-free exact set (order-insensitive) and `validate_arm_events` uses it instead of positional list equality.
-- `evals/test_run_eval.py` — 89 tests. Added `TestPluginManifest` (an independent manifest-validating fake plus acceptance and malformed-manifest rejection tests), tool-set unit tests (permutation accepted; missing/extra/duplicate/non-string/non-list rejected), a runtime-compatible materialization test, and a harness-permission-config test.
-- `docs/plans/eval-execution-harness.md` — this section (replaced, not appended).
+- `evals/run_eval.py` —
+  - `redact_jsonl` (new) parses each complete JSON event line, recursively
+    redacts only string keys and string values via `redact_obj`, and re-serializes
+    it as valid JSON, preserving numbers, booleans, nulls, arrays, and object
+    structure. Non-JSON/blank lines are redacted safely as raw text. `write_jsonl`
+    (new) applies it; `finalize_arm` writes `trace.jsonl` through `write_jsonl`
+    instead of raw `write_text`, so retained stream-json stays parseable.
+  - `_unsafe_redaction_token` and `validate_redaction_tokens` (new) atomically
+    reject imported environment values that are unsafe to apply to arbitrary raw
+    text (too short, a JSON literal, all-digit, or devoid of alphanumeric
+    characters) without echoing the value. `run_preflight` calls it after
+    collecting imported tokens and before `output_dir.mkdir`, so no output root
+    or partial staging is created on rejection.
+  - `compute_checks` gains a `source_mutated` parameter; when true it records a
+    `"source checkout mutated during the run"` pair-validity error, so a mutated
+    source is represented in `checks.json` (`pair_validity: fail`,
+    `case_pass: false`) and not only in the exit status. `main` computes
+    `source_status_after` before each `compute_checks` call and passes
+    `source_mutated`; `finalize_run` reuses an already-computed after-status.
+- `evals/test_run_eval.py` — 96 tests (was 89). Added `make_jsonl_redaction_fake`
+  (secret in stdout/stderr/JSONL values, keys, nested metadata, workspace
+  contents, filenames, symlink targets, alongside numeric/boolean/null/array
+  fields) and `make_source_mutator_fake` (valid pair that mutates the source
+  checkout). New public-CLI tests prove the JSONL trace stays line-parseable with
+  typed fields preserved and no leak; unsafe imported values are rejected
+  pre-output with no leak; and source mutation flips `pair_validity` to fail and
+  `case_pass` to false with full finalization. New unit tests cover
+  `redact_jsonl` (type preservation + malformed-line handling) and
+  `validate_redaction_tokens` (safe accepted; unsafe rejected without leaking).
+- `docs/plans/eval-execution-harness.md` — this section.
 
 ### Implemented command
 
@@ -291,25 +329,81 @@ python3 evals/run_eval.py --source-repo <repo> --suite <repo-relative-evals.json
 
 ### Defects corrected (proven by tests)
 
-1. **Plugin manifest rejected by the runtime.** The live run reported `plugin_errors: [... "Validation errors: skills: Invalid input"]`, `plugins: []`, and `skills: ["doctor"]` — the target skill was never discovered. The Claude Code 2.1.218 plugin manifest contract, confirmed against the installed official plugin manifests (`example-plugin`, `claude-md-management`, `skill-creator`, `frontend-design`), declares plugin metadata only and never a `skills` array; skills are filesystem-discovered from `skills/<name>/SKILL.md`. `write_plugin` now emits `{name, version, description}` for both arms; the with-skill arm stages `skills/starting-initiatives/SKILL.md`, the baseline stays equivalent and empty. `test_with_skill_plugin_materialized_runtime_compatible` proves the materialized shape; `TestPluginManifest` proves an independent fake accepts the generated manifest and discovers the skill, and independently rejects malformed manifests (declared `skills` array, missing `name`, missing manifest file).
-2. **Runtime tool order compared positionally.** The live run reported tools alphabetically (`["Bash","Edit","Read","Skill","Write"]`) regardless of the `--tools Skill,Read,Write,Edit,Bash` argv order, failing positional equality. `validate_tool_set` now requires the exact five tools as a duplicate-free set; the argv contract (`EXPECTED_TOOLS_ARG`) is preserved unchanged. `test_tool_order_permutation_accepted` proves permutations are accepted (including the live alphabetical order); `test_tool_missing_rejected`, `test_tool_extra_rejected`, `test_tool_duplicate_rejected`, `test_tool_nonstring_rejected`, and `test_tool_not_list_rejected` prove the remaining rejections.
-3. **Bash and Read denied under dontAsk.** The live run reported `permission_denials` for `Bash` and `Read` and the agent reported it could not act in don't-ask mode. `write_harness_settings` now carries `permissions.allow` set to exactly the five required tools; `--permission-mode dontAsk` is preserved (no `acceptEdits`, `bypassPermissions`, or `--dangerously-skip-permissions` substitution), and no user permission settings are imported — this harness file is the sole permission source. `test_harness_permissions_allow_only_five_tools_and_retain_dontask` proves the allow list contains exactly the five tools (no duplicates, nothing broader) and that the argv retains `dontAsk`.
+1. **Redaction corrupted retained JSONL.** Raw substring redaction turned
+   numeric fields (e.g. `estimated_tokens`) into bare `<redacted>` tokens,
+   invalidating `trace.jsonl` (`jq empty` parse error). `redact_jsonl` now
+   redacts structurally — only string keys/values — so numbers, booleans, nulls,
+   arrays, and structure survive and every retained line stays valid JSON.
+   `test_jsonl_trace_stays_parseable_and_types_preserved_under_redaction`
+   independently scans the whole output tree and captured stdout/stderr for a
+   synthetic secret, then proves every retained JSONL line parses and that
+   numeric/boolean/null/array fields keep exact types while the secret is gone;
+   `test_redact_jsonl_preserves_types_and_redacts_strings` and
+   `test_redact_jsonl_malformed_line_redacted_safely` prove the unit behavior
+   including malformed-line raw redaction.
+2. **Unsafe imported values were silently applied.** A low-entropy imported env
+   value (short, numeric, a JSON literal, or punctuation-only) used as a raw-text
+   redaction token would broadly collide and corrupt output.
+   `validate_redaction_tokens` rejects such values atomically before any write,
+   without leaking them. `test_unsafe_imported_redaction_value_rejected_pre_output`
+   proves no output root or partial staging is created and the value does not
+   leak; `TestRedactionPreflight` proves safe values are accepted and unsafe ones
+   rejected without appearing in the message.
+3. **Source mutation did not invalidate machine-readable checks.** `compute_checks`
+   previously ran before post-run source integrity was incorporated, so
+   finalization could record a mutation warning and nonzero exit while
+   `checks.json` still said `pair_validity: pass` and `case_pass: true`. A
+   detected source mutation is now a pair-validity failure that blocks
+   `case_pass`, with summary and checks agreeing with the exit status; source
+   evidence and full finalization are preserved. `test_source_mutation_invalidates_checks`
+   drives a controlled executor that mutates the source checkout and asserts
+   nonzero exit, `pair_validity: fail`, `case_pass: false`, the exact
+   source-integrity pair error with no secret, summary agreement, distinct
+   before/after source hashes, and a complete artifact inventory (both arms,
+   checker evidence, manifest, summary). The existing `test_source_status_evidence_recorded`
+   is retained but recording alone is no longer treated as sufficient.
 
 ### Preserve (no regression)
 
-Neutral prompts and exact argv (including `--tools Skill,Read,Write,Edit,Bash` and `--permission-mode dontAsk`); complete recursive redaction (contents, filenames, directory names, symlink targets); every-Bash correlation; strict runtime metadata; canary detection; atomic preflight; complete inventories for every outcome; timeout/process-group reaping; source integrity; independent-checker exception containment; exact assertion dispatch; the complete D7Y result-shape gate; unsupported-trace `ungradable` semantics — all retained and still covered by the prior public tests.
+Neutral prompts and exact argv (including `--tools Skill,Read,Write,Edit,Bash`
+and `--permission-mode dontAsk`); metadata-only plugin manifest; harness
+permission allow list; complete recursive redaction of contents, filenames,
+directory names, and symlink targets (now structural for JSONL); every-Bash
+correlation; strict runtime metadata; canary detection; atomic preflight;
+complete inventories for every outcome; timeout/process-group reaping;
+source-before/after evidence; independent-checker exception containment; exact
+assertion dispatch; the complete D7Y result-shape gate; unsupported-trace
+`ungradable` semantics — all retained and still covered by the prior public tests.
 
 ### Exact verification results
 
 - `python3 evals/validate_skill_evals.py` — both suites VALID.
-- `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s evals -p 'test_*.py' -v` — 89 tests, OK.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s evals -p 'test_*.py' -v` — 96 tests, OK.
 - `./d7y validate` — evals and initiatives valid (rc=0).
+- `git diff --check` — clean (rc=0).
 - `git diff --check main...HEAD` — clean (rc=0).
 
 ### Deferred live gates / residual risk
 
-- No live Claude run was executed for this correction (network prohibited). Offline fakes prove contract mechanics only — manifest acceptance, set-based tool validation, and the permission payload — not that the live Claude 2.1.218 runtime honors them. The actual Claude runtime remains a live gate.
-- **Manifest contract:** the metadata-only shape is corroborated by the installed official plugin manifests and by the live failure mode (`skills: Invalid input`), so the generated manifest is now structurally compatible; live confirmation that the plugin loads and `starting-initiatives` is discovered remains a live gate.
-- **Permission contract — explicit residual uncertainty:** the `permissions.allow` allow list is the documented Claude Code permission mechanism and matches the bare-tool-name rule shape observed in the local user settings, but whether the installed Claude 2.1.218 runtime honors `permissions.allow` under `--permission-mode dontAsk` (versus denying every tool regardless of the allow list) has not been proven offline. If the live runtime cannot express "allow exactly these five tools while denying everything else under dontAsk," that is an incompatibility to surface rather than weaken: the contract will not be broadened to `bypassPermissions`, `acceptEdits`, or any wider allow list to make a run succeed.
-- The first real `starting-initiatives` qualification pair, real skill-resource portability, production timeout behavior, suppression-canary effectiveness against the live CLI, the live `d7y` command/tool_result stream contract, and model-routing observations remain Amp's independent live gates.
-- Schema, suites, `SKILL.md`, `d7y`, initiative canon, other skills/plans, prompts, and `DEVELOPMENT.md` were not modified. Plan status remains `todo`.
+- The existing live artifacts are NOT claimed repaired; a new authoritative live
+  run is required after this correction. Offline fakes prove contract mechanics
+  only — structural JSONL redaction, preflight rejection of unsafe tokens, and
+  source-mutation check invalidation — not that the live Claude 2.1.218 runtime
+  emits a now-clean trace. The actual Claude runtime remains a live gate.
+- **Structural redaction boundary:** `redact_jsonl` only preserves types for
+  lines that parse as JSON. A genuine non-JSON line (rare for stream-json) is
+  scrubbed as raw text and need not remain parseable; this is intentional and is
+  covered by the malformed-line unit test. Raw `stderr.txt` remains raw-text
+  redacted (stderr is not structured JSON).
+- **Token-safety rule:** the preflight rejects tokens shorter than 8 characters,
+  JSON literals, all-digit tokens, and tokens with no alphanumeric character. A
+  legitimate imported secret that happens to be very short or all-numeric would
+  be rejected rather than silently under-redacted; that is the intended safe
+  failure and surfaces as a preflight error for human review.
+- The first real `starting-initiatives` qualification pair, real skill-resource
+  portability, production timeout behavior, suppression-canary effectiveness
+  against the live CLI, the live `d7y` command/tool_result stream contract,
+  model-routing observations, manifest loading, and `permissions.allow` honor
+  under `dontAsk` remain Amp's independent live gates.
+- Schema, suites, `SKILL.md`, `d7y`, initiative canon, other skills/plans,
+  prompts, and `DEVELOPMENT.md` were not modified. Plan status remains `todo`.

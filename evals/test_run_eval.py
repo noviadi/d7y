@@ -385,6 +385,52 @@ def make_redaction_fake(tmp: Path) -> Path:
     return _write_fake(tmp, "redaction", behavior)[0]
 
 
+def make_jsonl_redaction_fake(tmp: Path) -> Path:
+    secret_ref = "os.environ.get('D7Y_EVAL_TEST_TOKEN', '')"
+    behavior = (
+        "import glob as _glob\n"
+        "_matches = _glob.glob(os.path.join(_plugin or '', 'skills', '*', 'SKILL.md')) if _plugin else []\n"
+        "_has_skill = bool(_matches)\n"
+        "_skill_name = os.path.basename(os.path.dirname(_matches[0])) if _matches else None\n"
+        "_target = ('d7y-eval-session:' + _skill_name) if _has_skill else None\n"
+        "_skills = [_target, 'doctor'] if _has_skill else ['doctor']\n"
+        "_pname = 'd7y-eval-session' if _has_skill else 'd7y-eval-control'\n"
+        "_sid = 'jl-' + str(os.getpid())\n"
+        "_secret = " + secret_ref + "\n"
+        # The secret appears in a string value, a JSON key, and nested metadata,
+        # alongside numeric, boolean, null, and array fields that must keep their
+        # exact types after redaction. The secret's digits also occur in 'count'
+        # so a raw-substring redaction would have corrupted that number.
+        "print(json.dumps({'type': 'system', 'subtype': 'init', 'session_id': _sid, "
+        "'tools': ['Skill', 'Read', 'Write', 'Edit', 'Bash'], 'model': 'claude-sonnet-5', "
+        "'skills': _skills, 'plugins': [{'name': _pname, 'path': _plugin or '', 'version': '0.0.1'}], "
+        "'mcp_servers': [], 'permissionMode': 'dontAsk', "
+        "'leak_value': 'seen ' + _secret, "
+        "_secret + '_key': 'k', "
+        "'meta': {'deep': 'x-' + _secret + '-y', 'count': 42, 'flag': True, 'zero': None, "
+        "'arr': [1, 2, 3]}}))\n"
+        # Secret in raw stdout string content and a tool_result string.
+        "print(json.dumps({'type': 'assistant', 'message': {'role': 'assistant', 'model': 'glm-4.7',\n"
+        "    'content': [{'type': 'tool_use', 'id': 'j1', 'name': 'Bash', 'input': {'command': 'echo ' + _secret}}]}}))\n"
+        "print(json.dumps({'type': 'user', 'message': {'role': 'user', 'content': [{'type': 'tool_result',\n"
+        "    'tool_use_id': 'j1', 'content': 'got ' + _secret, 'is_error': False}]}}))\n"
+        # Secret in raw stderr.
+        "sys.stderr.write('stderr leak ' + _secret + '\\n')\n"
+        # Secret in a retained filename, file contents, and a symlink target.
+        "if _root and _has_skill:\n"
+        "    open(os.path.join(_root, _secret + '.md'), 'w').write('named after secret ' + _secret)\n"
+        "    try:\n"
+        "        os.symlink('/tmp/' + _secret + '-target', os.path.join(_root, _secret + '.link'))\n"
+        "    except OSError:\n"
+        "        pass\n"
+        "print(json.dumps({'type': 'result', 'subtype': 'success', 'result': 'final ' + _secret,\n"
+        "    'is_error': False, 'num_turns': 4, 'permission_denials': [],\n"
+        "    'modelUsage': {'claude-sonnet-5': {'provider': 'firstParty', 'canonicalModel': 'claude-sonnet-5'}}}))\n"
+        "sys.exit(0)\n"
+    )
+    return _write_fake(tmp, "jsonl-redaction", behavior)[0]
+
+
 def make_canary_leak_fake(tmp: Path, channel: str) -> Path:
     sig = CANARY_SIGNAL
     siglit = repr(sig)
@@ -510,6 +556,44 @@ def make_mutator_fake(tmp: Path, mutation: str) -> Path:
         "sys.exit(0)\n"
     )
     return _write_fake(tmp, "mut-" + mutation, behavior)[0]
+
+
+def make_source_mutator_fake(tmp: Path, repo: Path) -> Path:
+    """A fake that emits a valid pair but mutates the SOURCE checkout.
+
+    Both arms are otherwise valid (target present with-skill, absent baseline,
+    canaries clean, distinct sessions). During the with-skill arm it writes an
+    untracked file into the source repository (whose absolute path is embedded
+    literally here), so post-run source status differs from before. This proves
+    source mutation is represented as a machine-readable pair-validity failure
+    rather than only a nonzero exit.
+    """
+    behavior = (
+        "import glob as _glob, os as _os\n"
+        "_matches = _glob.glob(os.path.join(_plugin or '', 'skills', '*', 'SKILL.md')) if _plugin else []\n"
+        "_has_skill = bool(_matches)\n"
+        "_skill_name = os.path.basename(os.path.dirname(_matches[0])) if _matches else None\n"
+        "_target = ('d7y-eval-session:' + _skill_name) if _has_skill else None\n"
+        "_skills = [_target, 'doctor'] if _has_skill else ['doctor']\n"
+        "_pname = 'd7y-eval-session' if _has_skill else 'd7y-eval-control'\n"
+        "_sid = 'sm-' + str(os.getpid())\n"
+        "print(json.dumps({'type': 'system', 'subtype': 'init', 'session_id': _sid, "
+        "'tools': ['Skill', 'Read', 'Write', 'Edit', 'Bash'], 'model': 'claude-sonnet-5', "
+        "'skills': _skills, 'plugins': [{'name': _pname, 'path': _plugin or '', 'version': '0.0.1'}], "
+        "'mcp_servers': [], 'permissionMode': 'dontAsk'}))\n"
+        "if _has_skill:\n"
+        "    print(json.dumps({'type': 'assistant', 'message': {'role': 'assistant', 'model': 'glm-4.7',\n"
+        "        'content': [{'type': 'tool_use', 'id': 's1', 'name': 'Skill', 'input': {'skill': _target}}]}}))\n"
+        "    try:\n"
+        "        open(_os.path.join(" + repr(str(repo)) + ", 'SOURCE_MUTATED_BY_FAKE'), 'w').write('x')\n"
+        "    except OSError:\n"
+        "        pass\n"
+        "print(json.dumps({'type': 'result', 'subtype': 'success', 'result': 'ok', 'is_error': False,\n"
+        "    'num_turns': 2, 'permission_denials': [],\n"
+        "    'modelUsage': {'claude-sonnet-5': {'provider': 'firstParty', 'canonicalModel': 'claude-sonnet-5'}}}))\n"
+        "sys.exit(0)\n"
+    )
+    return _write_fake(tmp, "source-mut", behavior)[0]
 
 
 def make_process_trace_fake(tmp: Path, variant: str) -> Path:
@@ -873,6 +957,61 @@ class TestRedactionUnit(unittest.TestCase):
             bad = Path(d) / "bad.json"
             bad.write_text("not json")
             self.assertEqual(run_eval.collect_env_tokens(bad), [])
+
+    def test_redact_jsonl_preserves_types_and_redacts_strings(self):
+        secret = "synthetic-jsonl-secret-42-value"
+        line = json.dumps({
+            "leak": "seen " + secret,
+            secret + "_key": "k",
+            "meta": {"deep": "x-" + secret + "-y", "count": 42, "flag": True,
+                     "zero": None, "arr": [1, 2, 3]},
+        })
+        out = run_eval.redact_jsonl(line + "\n", [secret])
+        self.assertNotIn(secret, out)
+        # Every retained line stays valid JSON.
+        parsed = json.loads(out.strip())
+        # Numeric, boolean, null, and array fields keep exact types and values
+        # (the '42' digits inside the secret must not corrupt the count field).
+        self.assertEqual(parsed["meta"]["count"], 42)
+        self.assertIs(parsed["meta"]["flag"], True)
+        self.assertIsNone(parsed["meta"]["zero"])
+        self.assertEqual(parsed["meta"]["arr"], [1, 2, 3])
+        self.assertEqual(parsed["leak"], "seen <redacted>")
+        self.assertEqual(parsed["<redacted>_key"], "k")
+        self.assertEqual(parsed["meta"]["deep"], "x-<redacted>-y")
+
+    def test_redact_jsonl_malformed_line_redacted_safely(self):
+        secret = "synthetic-malformed-secret-value"
+        parts = [
+            json.dumps({"ok": "keep " + secret, "n": 7}),
+            "this line is not json and has " + secret,
+            json.dumps({"b": False}),
+        ]
+        text = "\n".join(parts) + "\n"
+        out = run_eval.redact_jsonl(text, [secret])
+        self.assertNotIn(secret, out)
+        lines = [ln for ln in out.splitlines() if ln.strip()]
+        # The two valid JSON lines still parse; the malformed line was scrubbed
+        # as raw text (it need not parse, but must not leak the value).
+        self.assertEqual(json.loads(lines[0])["n"], 7)
+        self.assertIs(json.loads(lines[2])["b"], False)
+
+
+class TestRedactionPreflight(unittest.TestCase):
+    """Unsafe imported redaction values are rejected atomically, without leaking."""
+
+    SAFE = "synthetic-safe-secret-value"
+
+    def test_safe_token_accepted(self):
+        run_eval.validate_redaction_tokens([self.SAFE])  # no raise
+
+    def test_unsafe_tokens_rejected_without_leaking_value(self):
+        # Covers: short, JSON literal, all-digit (short and long), no-alphanumeric.
+        for value in ("123", "true", "false", "null", "----", "12345678", "--------"):
+            with self.assertRaises(run_eval.PreflightError) as cm:
+                run_eval.validate_redaction_tokens([value])
+            # The value itself must never appear in the rejection message.
+            self.assertNotIn(value, str(cm.exception))
 
 
 class TestCanaryScan(unittest.TestCase):
@@ -1404,6 +1543,108 @@ class TestPublicCLI(unittest.TestCase):
         self.assertIn("<redacted>", (output / "with-skill" / "artifacts" / "checker.json").read_text())
         # The secret-named file was renamed and the secret symlink removed.
         self.assertFalse((output / "with-skill" / "workspace" / (secret + ".md")).exists())
+
+    # -- correction: retained JSONL stays parseable; typed fields preserved -----
+
+    def test_jsonl_trace_stays_parseable_and_types_preserved_under_redaction(self):
+        fake = make_jsonl_redaction_fake(self.tmp)
+        secret = "synthetic-jsonl-secret-42-value"
+        settings = make_user_settings(self.tmp, env={"D7Y_EVAL_TEST_TOKEN": secret})
+        output = self.tmp / "out"
+        proc = run_cli(self.repo, "skills/starting-initiatives/evals/evals.json",
+                       "start-new-initiative", output, claude=fake, user_settings=settings)
+        self.assertNotEqual(proc.returncode, 2, proc.stderr)
+        # Captured CLI stdout/stderr never carry the value.
+        self.assertNotIn(secret, proc.stdout)
+        self.assertNotIn(secret, proc.stderr)
+        # Scan the complete output tree without exclusions: contents, every path
+        # component, and symlink targets.
+        leaked = []
+        for p in output.rglob("*"):
+            rel = str(p)
+            if secret in rel:
+                leaked.append(("path", rel))
+            if p.is_symlink() and secret in os.readlink(p):
+                leaked.append(("symlink-target", rel))
+            if p.is_file():
+                try:
+                    if secret in p.read_text(errors="ignore"):
+                        leaked.append(("content", rel))
+                except OSError:
+                    continue
+        self.assertEqual(leaked, [], f"secret leaked in: {leaked}")
+        # Every retained JSONL trace parses line-by-line; numeric, boolean, null,
+        # and array fields keep exact types; the secret is gone from strings.
+        for arm in ("with-skill", "baseline"):
+            trace = output / arm / "artifacts" / "trace.jsonl"
+            text = trace.read_text()
+            self.assertIn("<redacted>", text)
+            self.assertNotIn(secret, text)
+            for line in text.splitlines():
+                if not line.strip():
+                    continue
+                ev = json.loads(line)  # must parse
+                if ev.get("type") == "system" and ev.get("subtype") == "init":
+                    meta = ev["meta"]
+                    self.assertEqual(meta["count"], 42)
+                    self.assertIs(meta["flag"], True)
+                    self.assertIsNone(meta["zero"])
+                    self.assertEqual(meta["arr"], [1, 2, 3])
+                    self.assertEqual(ev["leak_value"], "seen <redacted>")
+                    self.assertEqual(ev["<redacted>_key"], "k")
+                    self.assertEqual(meta["deep"], "x-<redacted>-y")
+
+    # -- correction: unsafe imported redaction values rejected pre-output ------
+
+    def test_unsafe_imported_redaction_value_rejected_pre_output(self):
+        fake = make_invocation_recording_fake(self.tmp)
+        for value in ("123", "true", "null"):
+            settings = make_user_settings(self.tmp, env={"D7Y_EVAL_TEST_TOKEN": value})
+            output = self.tmp / f"out-{value}"
+            proc = run_cli(self.repo, "skills/starting-initiatives/evals/evals.json",
+                           "start-new-initiative", output, claude=fake, dry_run=True,
+                           user_settings=settings)
+            self.assertEqual(proc.returncode, 2, proc.stderr)
+            # No output root or partial staging is created.
+            self.assertFalse(output.exists(), f"value {value!r}: output root created")
+            # The unsafe value must not leak in diagnostics.
+            self.assertNotIn(value, proc.stdout)
+            self.assertNotIn(value, proc.stderr)
+
+    # -- correction: source mutation invalidates machine-readable checks --------
+
+    def test_source_mutation_invalidates_checks(self):
+        fake = make_source_mutator_fake(self.tmp, self.repo)
+        output = self.tmp / "out"
+        proc = run_cli(self.repo, "skills/starting-initiatives/evals/evals.json",
+                       "start-new-initiative", output, claude=fake,
+                       user_settings=make_user_settings(self.tmp))
+        # Runner exits nonzero.
+        self.assertNotEqual(proc.returncode, 0, proc.stderr)
+        checks = json.loads((output / "checks.json").read_text())
+        # Source mutation is represented as a pair-validity failure.
+        self.assertEqual(checks["pair_validity"]["status"], "fail", checks["pair_validity"])
+        # It blocks case_pass.
+        self.assertFalse(checks["case_pass"])
+        # The arms themselves were valid; source mutation is the sole pair error
+        # and carries no secret.
+        self.assertEqual(checks["pair_validity"]["errors"],
+                         ["source checkout mutated during the run"])
+        self.assertNotIn("synthetic-token", (output / "checks.json").read_text())
+        # Top-level summary agrees with the failed exit status.
+        summary = (output / "summary.md").read_text()
+        self.assertIn("pair validity: fail", summary)
+        self.assertIn("mutated", summary.lower())
+        # Source-before/after evidence recorded and complete inventory emitted.
+        status = json.loads((output / "source-status.json").read_text())
+        self.assertTrue(status["mutated"])
+        self.assertNotEqual(status["before_hash"], status["after_hash"])
+        _assert_complete_inventory(self, output)
+        for arm in ("with-skill", "baseline"):
+            self.assertTrue((output / arm / "artifacts" / "checker.json").exists())
+        # The source checkout was in fact mutated (untracked marker).
+        self.assertEqual(_git(self.repo, "status", "--porcelain").strip(),
+                         "?? SOURCE_MUTATED_BY_FAKE")
 
     # -- correction 6: canary leakage across channels -----------------------
 

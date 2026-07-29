@@ -215,7 +215,12 @@ def redact_text(text: str, tokens: list[str]) -> str:
 
 
 def redact_obj(obj: Any, tokens: list[str]) -> Any:
-    """Recursively redact tokens from strings in JSON keys and values."""
+    """Recursively redact tokens from strings in JSON keys and values.
+
+    Non-string scalars (numbers, booleans, null) and the array/object structure
+    are preserved untouched, so a redacted JSON value is still valid JSON of the
+    same shape. This is what makes structural JSONL redaction safe.
+    """
     if isinstance(obj, str):
         return redact_text(obj, tokens)
     if isinstance(obj, list):
@@ -223,6 +228,38 @@ def redact_obj(obj: Any, tokens: list[str]) -> Any:
     if isinstance(obj, dict):
         return {redact_text(str(key), tokens): redact_obj(value, tokens) for key, value in obj.items()}
     return obj
+
+
+def redact_jsonl(text: str, tokens: list[str]) -> str:
+    """Redact stream-json/JSONL structurally so every retained line stays valid JSON.
+
+    Raw substring redaction corrupts retained traces: an imported value that
+    matches a numeric field (e.g. an ``estimated_tokens`` count) turns the
+    number into a bare ``<redacted>`` token and the whole line becomes invalid
+    JSON. To prevent that, each complete JSON event line is parsed and redacted
+    recursively over string keys and string values only — numbers, booleans,
+    nulls, arrays, and object structure are preserved — then re-serialized as
+    valid single-line JSON. Lines that are empty, blank, or not parseable JSON
+    (malformed/non-JSON raw output) are redacted safely as raw text. Per-line
+    separation is preserved.
+    """
+    if not isinstance(text, str):
+        return text
+    out_lines: list[str] = []
+    for line in text.splitlines():
+        if not line.strip():
+            out_lines.append(line)
+            continue
+        try:
+            event = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            out_lines.append(redact_text(line, tokens))
+            continue
+        out_lines.append(json.dumps(redact_obj(event, tokens), ensure_ascii=False))
+    result = "\n".join(out_lines)
+    if text.endswith("\n"):
+        result += "\n"
+    return result
 
 
 def collect_env_tokens(path: Path) -> list[str]:
@@ -242,6 +279,46 @@ def collect_env_tokens(path: Path) -> list[str]:
             if isinstance(value, str) and value:
                 tokens.append(value)
     return tokens
+
+
+# JSON literals that, as raw-text redaction tokens, would collide with ordinary
+# structured output and corrupt it.
+_UNSAFE_LITERAL_TOKENS = {"true", "false", "null"}
+
+
+def _unsafe_redaction_token(token: str) -> bool:
+    """True if a value is unsafe to apply as a raw-text redaction token.
+
+    Such a token is low-entropy or broadly colliding: too short to be specific,
+    a JSON literal, all digits (collides with numeric fields), or devoid of any
+    alphanumeric character (collides with punctuation/metadata). Applying any of
+    these to raw stdout/stderr would scrub large unrelated regions and can break
+    retained JSON. We refuse rather than silently omit redaction.
+    """
+    if len(token) < 8:
+        return True
+    if token.lower() in _UNSAFE_LITERAL_TOKENS:
+        return True
+    if token.isdigit():
+        return True
+    if not any(ch.isalnum() for ch in token):
+        return True
+    return False
+
+
+def validate_redaction_tokens(tokens: list[str]) -> None:
+    """Atomically reject unsafe imported redaction values before any write.
+
+    Raises ``PreflightError`` (without echoing the value) if any imported token
+    is unsafe to apply to arbitrary raw text. Must run before materialization or
+    staging writes so no partial output root is created.
+    """
+    for token in tokens:
+        if token and _unsafe_redaction_token(token):
+            raise PreflightError(
+                "an imported environment redaction value is unsafe to apply to "
+                "raw output (too short or broadly colliding); refusing to run"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -1833,6 +1910,7 @@ def compute_checks(
     with_skill: ArmResult,
     baseline: ArmResult,
     skill_name: str,
+    source_mutated: bool = False,
 ) -> dict[str, Any]:
     target = expected_target(skill_name)
 
@@ -1845,6 +1923,12 @@ def compute_checks(
             )
         if not arm.canary_clean:
             pair_errors.append(f"{label} arm canary leakage: {arm.canary_issues}")
+    if source_mutated:
+        # A mutated source checkout invalidates the pair: inputs were no longer
+        # read solely from the immutable commit during the run. This must be
+        # reflected in machine-readable checks, not only in the exit status, so
+        # that checks.json never reports a passing pair for an invalidated run.
+        pair_errors.append("source checkout mutated during the run")
 
     ws_skills = with_skill.validation.skills if with_skill.validation else []
     bl_skills = baseline.validation.skills if baseline.validation else []
@@ -1927,6 +2011,16 @@ def write_json(path: Path, data: Any, tokens: list[str]) -> None:
     path.write_text(json.dumps(redact_obj(data, tokens), indent=2), encoding="utf-8")
 
 
+def write_jsonl(path: Path, content: str, tokens: list[str]) -> None:
+    """Write retained stream-json/JSONL with structural redaction.
+
+    Keeps every retained trace line parseable while still scrubbing imported
+    values from all string keys and values.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(redact_jsonl(content, tokens), encoding="utf-8")
+
+
 def finalize_arm(
     arm_dir: Path,
     arm: ArmResult,
@@ -1937,7 +2031,7 @@ def finalize_arm(
 ) -> None:
     """Always write the complete per-arm artifact inventory, even on failure."""
     if arm.outcome is not None:
-        write_text(arm_dir / "trace.jsonl", arm.outcome.stdout, tokens)
+        write_jsonl(arm_dir / "trace.jsonl", arm.outcome.stdout, tokens)
         write_text(arm_dir / "stderr.txt", arm.outcome.stderr, tokens)
         process_state = {
             "exit_code": arm.outcome.exit_code,
@@ -1947,7 +2041,7 @@ def finalize_arm(
             "state": arm.state,
         }
     else:
-        write_text(arm_dir / "trace.jsonl", "", tokens)
+        write_jsonl(arm_dir / "trace.jsonl", "", tokens)
         write_text(arm_dir / "stderr.txt", "", tokens)
         process_state = {
             "exit_code": None,
@@ -2117,6 +2211,10 @@ def run_preflight(args: argparse.Namespace, ctx: "RunContext") -> Preflight:
     )
     # Acquire imported-value redaction tokens before any validation can expose them.
     imported_tokens = collect_env_tokens(user_settings_path)
+    # Atomically reject unsafe imported values before any output/staging write.
+    # This must precede materialization so no partial output root is created and
+    # so a low-entropy value is never applied to raw retained output.
+    validate_redaction_tokens(imported_tokens)
 
     seed_repo_paths = ["initiatives/README.md"]
     ws_entries = build_staging_plan(
@@ -2362,7 +2460,8 @@ def _status_hash(status: str) -> str:
 
 def finalize_run(ctx: RunContext) -> None:
     """One run-level finalization path: arms, manifest, checks, source, summary."""
-    ctx.source_status_after = source_status(ctx.repo)
+    if ctx.source_status_after is None:
+        ctx.source_status_after = source_status(ctx.repo)
     preflight = ctx.preflight
     if preflight is None:
         return
@@ -2510,9 +2609,11 @@ def main(argv: list[str] | None = None) -> int:
                             executable_version=None, other_session_id=None)
                 execute_arm(ctx.baseline, preflight, with_skill=False, executable=None,
                             executable_version=None, other_session_id=None)
+                ctx.source_status_after = source_status(ctx.repo)
                 ctx.checks = compute_checks(
                     case=preflight.case, with_skill=ctx.with_skill,
-                    baseline=ctx.baseline, skill_name=preflight.skill_name)
+                    baseline=ctx.baseline, skill_name=preflight.skill_name,
+                    source_mutated=(ctx.source_status_after or "") != ctx.source_status_before)
                 ctx.exit_code = 2
             else:
                 execute_arm(ctx.with_skill, preflight, with_skill=True, executable=executable,
@@ -2521,9 +2622,11 @@ def main(argv: list[str] | None = None) -> int:
                             executable_version=executable_version,
                             other_session_id=(ctx.with_skill.validation.session_id
                                               if ctx.with_skill.validation else None))
+                ctx.source_status_after = source_status(ctx.repo)
                 ctx.checks = compute_checks(
                     case=preflight.case, with_skill=ctx.with_skill,
-                    baseline=ctx.baseline, skill_name=preflight.skill_name)
+                    baseline=ctx.baseline, skill_name=preflight.skill_name,
+                    source_mutated=(ctx.source_status_after or "") != ctx.source_status_before)
                 ctx.exit_code = 0 if ctx.checks["case_pass"] else 1
     except PreflightError as exc:
         ctx.error = f"preflight failed: {exc}"
