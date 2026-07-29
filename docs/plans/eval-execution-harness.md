@@ -264,6 +264,20 @@ Focused acceptance cases must include suppression canaries for user or project i
 
 ### Execution posture
 
+Eleventh incremental correction (process-start sanitization), on branch
+`work/eval-execution-harness`, base `d2043ae`. Review finding: the
+`process-start` root is created and used as the agent's cwd (and the independent
+checker's cwd), but the ninth correction's retained-root sanitization loop
+omitted it. An agent command that writes an imported value into its current
+directory would leave a leaking file under the output root. Fix: include
+`process_start` in the final retained-tree sanitization loop (it is scrubbed
+after execution finishes using it). Added `make_cwd_leak_fake` (writes the
+imported value into `os.getcwd()` — into a file's content and a value-named
+filename) and a public test that runs it and asserts the complete, no-exemption
+output scan finds no leak. The test was confirmed to fail without the fix and
+pass with it. Source-mutation, scalar-collision, provenance-encoding, and
+complete-redaction policies are unchanged. 104 tests pass offline.
+
 Tenth incremental correction (reversible encoded provenance), on branch
 `work/eval-execution-harness`, base `19a0c6c`. A prior review finding: redacting
 commit/blob object ids and source-status hashes destroys exact provenance —

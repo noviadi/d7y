@@ -2604,14 +2604,16 @@ def finalize_run(ctx: RunContext) -> None:
     # may carry agent-authored values; the capability, plugin, config, and temp
     # roots are deterministic runtime installations (committed scripts, the skill
     # payload, suppression canaries) that are NOT stdout/stderr or JSON artifacts
-    # and so are not redacted at write time. They are retained under the output
-    # tree, and a low-entropy imported value (e.g. ``"1"``) can appear in them
-    # coincidentally, so they are scrubbed here — after execution has finished
-    # using them — so that no imported value remains anywhere in the output tree.
+    # and so are not redacted at write time. ``process_start`` is the agent's cwd
+    # and can also receive agent-authored files. They are retained under the
+    # output tree, and a low-entropy imported value (e.g. ``"1"``) can appear in
+    # any of them — coincidentally or written by the agent into its cwd — so they
+    # are scrubbed here, after execution has finished using them, so that no
+    # imported value remains anywhere in the output tree.
     for key in ("with_skill_workspace", "baseline_workspace",
                 "capability", "with_skill_plugin", "baseline_plugin",
                 "with_skill_config", "baseline_config",
-                "with_skill_temp", "baseline_temp"):
+                "with_skill_temp", "baseline_temp", "process_start"):
         root = preflight.roots.get(key)
         if root is not None and root.exists():
             sanitize_workspace(root, tokens)

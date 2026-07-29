@@ -498,6 +498,45 @@ def make_scalar_collision_fake(tmp: Path) -> Path:
     return _write_fake(tmp, "scalar-collision", behavior)[0]
 
 
+def make_cwd_leak_fake(tmp: Path) -> Path:
+    """Write the imported value into the process current directory (process-start).
+
+    The harness launches each arm with cwd = the ``process-start`` root (not the
+    target workspace). This fake writes the imported value into ``os.getcwd()``
+    — both into a file's content and into a value-named filename — to exercise
+    the production leak path where an agent command drops a value into its cwd.
+    The complete-tree scan must find no trace after finalization.
+    """
+    secret_ref = "os.environ.get('D7Y_EVAL_TEST_TOKEN', '')"
+    behavior = (
+        "import glob as _glob\n"
+        "_matches = _glob.glob(os.path.join(_plugin or '', 'skills', '*', 'SKILL.md')) if _plugin else []\n"
+        "_has_skill = bool(_matches)\n"
+        "_skill_name = os.path.basename(os.path.dirname(_matches[0])) if _matches else None\n"
+        "_target = ('d7y-eval-session:' + _skill_name) if _has_skill else None\n"
+        "_skills = [_target, 'doctor'] if _has_skill else ['doctor']\n"
+        "_pname = 'd7y-eval-session' if _has_skill else 'd7y-eval-control'\n"
+        "_sid = 'cwd-' + str(os.getpid())\n"
+        "_secret = " + secret_ref + "\n"
+        # Drop the imported value into the process cwd (the process-start root):
+        # into a file's content and into a value-named filename.
+        "try:\n"
+        "    open(os.path.join(os.getcwd(), 'leak.txt'), 'w').write('cwd leak ' + _secret)\n"
+        "    open(os.path.join(os.getcwd(), _secret + '.md'), 'w').write('named ' + _secret)\n"
+        "except OSError:\n"
+        "    pass\n"
+        "print(json.dumps({'type': 'system', 'subtype': 'init', 'session_id': _sid, "
+        "'tools': ['Skill', 'Read', 'Write', 'Edit', 'Bash'], 'model': 'claude-sonnet-5', "
+        "'skills': _skills, 'plugins': [{'name': _pname, 'path': _plugin or '', 'version': '0.0.1'}], "
+        "'mcp_servers': [], 'permissionMode': 'dontAsk'}))\n"
+        "print(json.dumps({'type': 'result', 'subtype': 'success', 'result': 'ok', 'is_error': False, "
+        "'num_turns': 1, 'permission_denials': [],\n"
+        "    'modelUsage': {'claude-sonnet-5': {'provider': 'firstParty', 'canonicalModel': 'claude-sonnet-5'}}}))\n"
+        "sys.exit(0)\n"
+    )
+    return _write_fake(tmp, "cwd-leak", behavior)[0]
+
+
 def make_canary_leak_fake(tmp: Path, channel: str) -> Path:
     sig = CANARY_SIGNAL
     siglit = repr(sig)
@@ -1910,6 +1949,29 @@ class TestPublicCLI(unittest.TestCase):
         self.assertNotIn("glm-4.7", init["keys"])
         self.assertNotIn("30000", init["keys"])
         self.assertNotIn("1", init["keys"])
+
+    # -- correction: process-start (agent cwd) is sanitized ---------------------
+
+    def test_imported_value_written_to_process_start_is_redacted(self):
+        fake = make_cwd_leak_fake(self.tmp)
+        secret = "synthetic-cwd-leak-value"
+        settings = make_user_settings(self.tmp, env={"D7Y_EVAL_TEST_TOKEN": secret})
+        output = self.tmp / "out"
+        proc = run_cli(self.repo, "skills/starting-initiatives/evals/evals.json",
+                       "start-new-initiative", output, claude=fake, user_settings=settings)
+        self.assertNotEqual(proc.returncode, 2, proc.stderr)
+        # The process-start root exists and the fake wrote the value into it
+        # during execution (the production leak path: a command dropping a value
+        # into the agent's cwd).
+        self.assertTrue((output / "process-start").is_dir())
+        # The complete output scan (no exemptions) detects no leak anywhere,
+        # including the previously-unsanitized process-start root.
+        assert_no_imported_value_anywhere(self, output, proc.stdout, proc.stderr, [secret])
+        # The value-bearing file in process-start had its content redacted and
+        # the value-named file was renamed; neither retains the value.
+        ps = output / "process-start"
+        self.assertFalse((ps / (secret + ".md")).exists())
+        self.assertNotIn(secret, (ps / "leak.txt").read_text())
 
     # -- correction: reversible encoded provenance for Git object ids -----------
 
