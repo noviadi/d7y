@@ -193,10 +193,10 @@ Only `qualified` supports the full D7Y invocation contract. No qualification out
 
 The frozen runner demonstrated a configuration failure that must not be reproduced in Harbor. It read only the top-level `env` object from the host user's `~/.claude/settings.json`, imported every key/value into the Claude process, and overrode only `CLAUDE_CONFIG_DIR`, `PWD`, `TMPDIR`, and `PATH`. Model, provider, endpoint, and authentication variables therefore remained able to override the requested CLI model. A requested `claude-sonnet-5` and an observed routed model such as `glm-4.7` are different facts and must never be collapsed into one setting.
 
-The Harbor implementation must not read or mount the host `~/.claude/settings.json`. It must generate or materialize a task-scoped Claude configuration bundle inside the agent image or runtime workspace:
+The Harbor implementation must not read or mount the host `~/.claude/settings.json`. It must generate or materialize a task-scoped Claude configuration bundle inside the agent image or runtime workspace. More importantly, API routing must be a first-class Harbor run input, not an incidental Claude setting:
 
 1. **Harness settings** — a committed, reviewable settings file containing only D7Y-approved behavior controls such as project instruction policy, tool permissions, MCP policy, and persistence settings. It must not inherit user settings.
-2. **Runtime environment** — an explicit allowlist of configuration keys injected by Harbor. Values are supplied through approved runtime secret/configuration inputs, never committed to task files or printed in artifacts.
+2. **Runtime environment** — an explicit allowlist of configuration keys injected by Harbor. Values are supplied through approved runtime secret/configuration inputs, never committed to task files or printed in artifacts. This includes the endpoint/proxy URL and authentication inputs required by the selected API profile.
 3. **Model contract** — a requested model, provider, and effective model identity recorded separately. Any model/provider environment key not explicitly declared for the run is rejected before agent startup.
 4. **API endpoint contract** — the endpoint or proxy identity, configuration digest, upstream provider, and allowed hostnames are recorded. A credential value is never recorded.
 
@@ -221,12 +221,30 @@ must be version-tested rather than inferred from a successful final response.
 
 Harbor task configuration may reference runtime environment values, but must not contain secret values. The task must set explicit network policy for setup, agent, and verifier. The agent may reach only the declared API endpoint or proxy. The verifier must not receive agent credentials or API configuration unless a specific check requires a redacted configuration identity.
 
+Represent the route as a named, versioned API profile resolved when the Harbor task is built. At minimum it contains:
+
+- route kind: direct custom endpoint or proxy;
+- agent-visible endpoint value or internal proxy service name;
+- the allowlisted agent environment keys and runtime secret names;
+- upstream provider and model mapping, when a proxy performs translation;
+- exact Harbor allowed hosts and network mode;
+- redacted configuration digest and proxy image/configuration digest.
+
+For a direct endpoint, the generated task passes the endpoint and credentials through
+Harbor's approved environment interpolation and allowlists the endpoint host. For a
+proxy profile, the generated Docker Compose environment adds a proxy service; the
+agent points its Claude endpoint variable at that service, while only the proxy has
+the upstream network allowlist and upstream credentials. The proxy should emit a
+redacted request record (route, requested model, upstream status, and correlation
+ID) as a declared sidecar artifact. This proves routing without exposing the API
+credential or relying on Claude's final response.
+
 Support two qualified API topologies, selecting one per run:
 
 - **External proxy:** the agent reaches an approved HTTPS proxy or custom API endpoint through an exact Harbor allowlist; the proxy handles upstream authentication and any model translation.
 - **Harbor sidecar proxy:** a Docker Compose sidecar receives agent requests on an internal service name; only the sidecar reaches the upstream API. Sidecar configuration and upstream identity are hashed and recorded, while credentials remain runtime-only.
 
-The first qualification must prove the selected topology with a harmless request and a known response. It must record requested model, effective model/provider, endpoint identity, proxy identity/configuration digest, and authentication key names. It must fail with `evidence_error` or `agent_error` when the effective model/provider or endpoint cannot be established, and with `pair_error` when baseline and treatment receive different configuration. Do not infer model or API identity from the final response.
+The first qualification must prove the selected topology with a harmless request and a known response. It must record the API profile, route identity, proxy request record when applicable, requested model, effective model/provider when available, and authentication key names. It must fail with `evidence_error` or `agent_error` when the route cannot be established, and with `pair_error` when baseline and treatment receive different API profiles. Effective model/provider is useful provenance, but route evidence comes from the proxy or endpoint boundary, not from the final response.
 
 ## Progressive implementation sequence
 
@@ -234,7 +252,7 @@ The first qualification must prove the selected topology with a harmless request
 
 Treat the current Claude wrapper branch as a frozen historical attempt. Do not repair or extend its host-side isolation model in this plan.
 
-Record the pinned Harbor version and installation command, Python version, Docker client and daemon versions, selected image digests, selected agent integration, provider configuration, network policies, resource limits, Claude authentication mechanism and imported key names, and the exact runtime payload. Keep secrets out of plans, task files, and artifacts. The current environment has Docker client `29.6.2` but no permitted Docker daemon access; this is a preflight blocker until daemon access is granted or another explicitly qualified provider is selected.
+Record the pinned Harbor version and installation command, Python version, Docker client and daemon versions, selected image digests, selected agent integration, API profile and injection mechanism, network policies, resource limits, Claude authentication mechanism and imported key names, and the exact runtime payload. Keep secrets out of plans, task files, and artifacts. The current environment has Docker client `29.6.2` but no permitted Docker daemon access; this is a preflight blocker until daemon access is granted or another explicitly qualified provider is selected.
 
 **Exit evidence:** a committed implementation prompt can point at this plan, the main branch is the source base, and the chosen Harbor/Docker posture is reproducible by a developer.
 
@@ -273,19 +291,19 @@ The marker is a qualification probe, not an outcome score.
 
 ### Phase 3 — Qualify Claude Code through Harbor
 
-Run the synthetic positive and negative prompts with Harbor's Claude Code integration. Determine which evidence is genuinely available from Harbor and the integration rather than assumed from the old wrapper:
+Run the synthetic positive and negative prompts with Harbor's Claude Code integration and one explicit API profile. Determine which evidence is genuinely available from Harbor and the integration rather than assumed from the old wrapper:
 
 - target skill availability;
 - target-specific invocation;
 - tool calls and command results;
 - final response;
-- requested model and effective model/provider;
-- API endpoint/proxy identity and configuration digest;
+- API profile, route identity, and proxy request evidence when applicable;
+- requested model and effective model/provider when available;
 - authentication mechanism and imported key names, never values;
 - model and usage telemetry;
 - timeout and error state.
 
-Do not recreate the old host settings/plugin wrapper inside the Harbor task. Implement the explicit task-scoped configuration bundle and API topology above. If the Harbor Claude integration does not expose a supported way to inject those settings or environment values, stop and record the integration gap rather than importing host `settings.json` or weakening the model/provider checks.
+Do not recreate the old host settings/plugin wrapper inside the Harbor task. Implement the explicit task-scoped configuration bundle and API profile above. If the Harbor Claude integration does not expose a supported way to inject the profile's endpoint and credentials, stop and record the integration gap rather than importing host `settings.json` or weakening route checks.
 
 **Exit evidence:** a Harbor-specific capability record and parser or adapter tests, with unsupported telemetry explicitly listed.
 
