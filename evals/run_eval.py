@@ -347,6 +347,95 @@ def validate_redaction_tokens(tokens: list[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Reversible provenance encoding for Git object ids.
+# ---------------------------------------------------------------------------
+#
+# Conflict being resolved: exact provenance (resolved commit, real Git blob
+# object ids, selected immutable input objects, and the source-before/after
+# status hashes used for mutation detection) must remain independently
+# recoverable AND verifiable against Git; but those ids are hex strings that can
+# contain an imported token (e.g. the digit ``1``), so substring redaction would
+# destroy them. Storing them raw is forbidden (complete redaction is mandatory),
+# and simply redacting them to ``<redacted>`` destroys exact provenance.
+#
+# Resolution: encode each hex id as raw bytes represented by a JSON array of
+# integers (``byte + offset``), plus the integer ``offset``. The encoding is
+# collision-checked against the complete imported token set before writing: a
+# numeric token only collides with an integer by EXACT equality (never by digit
+# substring), so an offset is chosen for which no stored integer and no string
+# field carries any token. Because the chosen encoding is clean, structural
+# redaction (``redact_obj``) is a no-op on it, so the exact bytes survive in the
+# retained JSON artifact. ``decode_git_oid`` reverses it; the decoded hex can be
+# verified against Git (``git cat-file`` / ``git rev-parse``). This is used for
+# all exact-provenance fields; ordinary artifacts keep complete redaction.
+
+_OID_SCHEME = "git-oid-bytes"
+# Upper bound on the offset search. Real token sets converge within a few
+# iterations; the bound only guards a pathological dense token set, which fails
+# safely before materialization.
+_MAX_OID_OFFSET = 4_000_000
+
+
+def encode_git_oid(hex_id: str, tokens: list[str]) -> dict[str, Any]:
+    """Reversibly encode a hex Git object id so it cannot carry any imported token.
+
+    Returns ``{"scheme": "git-oid-bytes", "offset": N, "bytes": [b0+N, ...]}``
+    where ``bytes`` are the id's raw bytes each offset by ``N``. ``N`` is the
+    smallest non-negative integer for which the encoded value carries no imported
+    token under structural redaction (``redact_obj`` is a no-op on it). Raises
+    ``PreflightError`` if the id is not hex or no collision-free offset exists.
+    """
+    try:
+        raw = bytes.fromhex(hex_id)
+    except (ValueError, TypeError):
+        raise PreflightError("a provenance id is not hexadecimal; refusing to run")
+    n = 0
+    while n <= _MAX_OID_OFFSET:
+        candidate: dict[str, Any] = {
+            "scheme": _OID_SCHEME, "offset": n, "bytes": [b + n for b in raw],
+        }
+        # Clean iff structural redaction leaves the value unchanged.
+        if redact_obj(candidate, tokens) == candidate:
+            return candidate
+        n += 1
+    raise PreflightError(
+        "no collision-free provenance encoding offset for an imported token set; "
+        "refusing to run"
+    )
+
+
+def decode_git_oid(encoded: Any) -> str:
+    """Reverse ``encode_git_oid`` and return the original lowercase hex id.
+
+    Intended for artifact review and tests: the decoded hex can be verified
+    against Git (``git cat-file -e <id>`` or comparison to ``git rev-parse``).
+    Raises ``ValueError`` for a malformed encoding.
+    """
+    if not isinstance(encoded, dict) or encoded.get("scheme") != _OID_SCHEME:
+        raise ValueError("not an encoded git object id")
+    offset = encoded.get("offset")
+    bs = encoded.get("bytes")
+    if not isinstance(offset, int) or not isinstance(bs, list):
+        raise ValueError("malformed encoded git object id")
+    for b in bs:
+        if not isinstance(b, int):
+            raise ValueError("malformed encoded git object id")
+    return bytes(b - offset for b in bs).hex()
+
+
+def _encode_oid_map(mapping: dict[str, str], tokens: list[str]) -> dict[str, Any]:
+    return {key: encode_git_oid(value, tokens) for key, value in mapping.items()}
+
+
+def _encode_staged(staged: list[StagedObject], tokens: list[str]) -> list[dict[str, Any]]:
+    return [
+        {"destination": obj.destination, "source": obj.source,
+         "object_id": encode_git_oid(obj.object_id, tokens)}
+        for obj in staged
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Git helpers: every run input comes from immutable objects.
 # ---------------------------------------------------------------------------
 
@@ -2131,7 +2220,7 @@ def finalize_arm(
     )
     write_json(arm_dir / "workspace-changes.json", arm.workspace_changes or {}, tokens)
     write_json(arm_dir / "workspace-snapshot.json", arm.workspace_snapshot or {}, tokens)
-    write_json(arm_dir / "selected-objects.json", [obj.__dict__ for obj in arm.staged], tokens)
+    write_json(arm_dir / "selected-objects.json", _encode_staged(arm.staged, tokens), tokens)
     write_json(
         arm_dir / "validation.json",
         {
@@ -2550,7 +2639,7 @@ def finalize_run(ctx: RunContext) -> None:
     write_json(
         preflight.output_dir / "manifest.json",
         {
-            "commit": preflight.commit,
+            "commit": encode_git_oid(preflight.commit, tokens),
             "suite": preflight.suite_repo_path,
             "skill_name": preflight.skill_name,
             "case_id": preflight.case.get("id"),
@@ -2563,15 +2652,17 @@ def finalize_run(ctx: RunContext) -> None:
             "expected_tools": EXPECTED_TOOLS,
             "expected_tools_arg": EXPECTED_TOOLS_ARG,
             "permission_mode": EXPECTED_PERMISSION_MODE,
-            "plugin_object_ids": preflight.plugin_object_ids,
-            "capability_object_ids": preflight.capability_object_ids,
+            "plugin_object_ids": _encode_oid_map(preflight.plugin_object_ids, tokens),
+            "capability_object_ids": _encode_oid_map(preflight.capability_object_ids, tokens),
             "selected_objects": {
-                "with_skill": [obj.__dict__ for obj in preflight.staged_with_skill],
-                "baseline": [obj.__dict__ for obj in preflight.staged_baseline],
+                "with_skill": _encode_staged(preflight.staged_with_skill, tokens),
+                "baseline": _encode_staged(preflight.staged_baseline, tokens),
             },
             "env_provenance": preflight.env_provenance,
-            "source_status_before_hash": _status_hash(preflight.source_status_before),
-            "source_status_after_hash": _status_hash(ctx.source_status_after or ""),
+            "source_status_before_hash": encode_git_oid(
+                _status_hash(preflight.source_status_before), tokens),
+            "source_status_after_hash": encode_git_oid(
+                _status_hash(ctx.source_status_after or ""), tokens),
             "source_mutated": (ctx.source_status_after or "") != preflight.source_status_before,
             "dry_run": preflight.dry_run,
             "with_skill_argv": ctx.with_skill.argv if ctx.with_skill else None,
@@ -2582,14 +2673,16 @@ def finalize_run(ctx: RunContext) -> None:
     write_json(
         preflight.output_dir / "source-status.json",
         {
-            "before_hash": _status_hash(preflight.source_status_before),
-            "after_hash": _status_hash(ctx.source_status_after or ""),
+            "before_hash": encode_git_oid(
+                _status_hash(preflight.source_status_before), tokens),
+            "after_hash": encode_git_oid(
+                _status_hash(ctx.source_status_after or ""), tokens),
             "mutated": (ctx.source_status_after or "") != preflight.source_status_before,
         },
-        # Redact with the real token set, like every other JSON artifact: the
-        # hash strings are JSON strings and must not retain an imported value
-        # (e.g. a hex hash containing the digit "1"). The ``mutated`` boolean is
-        # computed from the raw statuses and is unaffected by redaction.
+        # Source-before/after provenance is encoded (not raw) so a hex hash that
+        # contains an imported token (e.g. the digit "1") is neither leaked nor
+        # destroyed; the encoded form decodes to the exact original hash. The
+        # ``mutated`` boolean is computed from the raw statuses and is unaffected.
         tokens,
     )
     if ctx.checks is not None:
@@ -2607,7 +2700,10 @@ def finalize_run(ctx: RunContext) -> None:
     lines: list[str] = []
     lines.append(f"# Eval summary: {preflight.case.get('id')} ({preflight.skill_name})")
     lines.append("")
-    lines.append(f"- commit: `{preflight.commit}`")
+    # Exact commit/blob provenance is retained encoded in manifest.json (decodable
+    # and verifiable against Git); the raw hex is not duplicated here, where it
+    # could otherwise be leaked or corrupted by redaction.
+    lines.append("- commit/blob provenance: see manifest.json (encoded, verifiable against Git)")
     lines.append(f"- suite: `{preflight.suite_repo_path}`")
     lines.append(f"- canonical model: `{EXPECTED_MODEL}`")
     lines.append(f"- dry run: {preflight.dry_run}")

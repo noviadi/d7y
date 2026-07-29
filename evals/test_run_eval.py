@@ -1120,6 +1120,57 @@ class TestRedactionPreflight(unittest.TestCase):
                 run_eval.validate_redaction_tokens([value])  # type: ignore[list-item]
 
 
+class TestProvenanceEncoding(unittest.TestCase):
+    """Reversible, token-free encoding for exact Git object id provenance."""
+
+    TOKENS = ["1", "30000", "true", "false", "null", "glm-4.7"]
+
+    def test_round_trip_and_no_token_carried(self):
+        for hex_id in (
+            "1" * 40,                 # worst case for token "1"
+            "30000a" + "f" * 34,      # contains "30000"
+            "0" * 40,                 # all-zero bytes (byte 0)
+            "01" + "f" * 38,          # a byte == 1 (collides with "1")
+            "f" * 40,                 # plain commit/blob sha
+            "a" * 64,                 # sha256-length status hash
+        ):
+            enc = run_eval.encode_git_oid(hex_id, self.TOKENS)
+            # Structural cleanliness: redaction is a no-op on the encoding, so no
+            # number/bool/null equals a token and no string carries one. (The
+            # serialized text may contain digit substrings inside integers, which
+            # are not the imported value and are not flagged by value-aware
+            # redaction or leak scanning.)
+            self.assertEqual(run_eval.redact_obj(enc, self.TOKENS), enc, hex_id)
+            # Reversible: decode recovers the exact original lowercase hex id.
+            self.assertEqual(run_eval.decode_git_oid(enc), hex_id, hex_id)
+
+    def test_encoding_is_valid_json(self):
+        enc = run_eval.encode_git_oid("f" * 40, self.TOKENS)
+        # Round-trips through JSON (this is how it is retained).
+        self.assertEqual(run_eval.decode_git_oid(json.loads(json.dumps(enc))), "f" * 40)
+
+    def test_decode_rejects_malformed(self):
+        with self.assertRaises(ValueError):
+            run_eval.decode_git_oid("not-a-dict")
+        with self.assertRaises(ValueError):
+            run_eval.decode_git_oid({"scheme": "other", "offset": 0, "bytes": [1]})
+        with self.assertRaises(ValueError):
+            run_eval.decode_git_oid({"scheme": "git-oid-bytes", "offset": 0,
+                                     "bytes": ["x"]})
+
+    def test_non_hex_rejected(self):
+        with self.assertRaises(run_eval.PreflightError):
+            run_eval.encode_git_oid("not-hex-zzz", self.TOKENS)
+
+    def test_offset_advances_past_colliding_token(self):
+        # With token "1" and an id whose first byte is 1, offset 0 and 1 both
+        # collide; a later offset is chosen and decoding still recovers the id.
+        enc = run_eval.encode_git_oid("01" + "f" * 38, ["1"])
+        self.assertNotEqual(enc["offset"], 0)
+        self.assertEqual(run_eval.decode_git_oid(enc), "01" + "f" * 38)
+        self.assertEqual(run_eval.redact_obj(enc, ["1"]), enc)
+
+
 class TestCanaryScan(unittest.TestCase):
     def test_recursive_signal_detection_in_nested_metadata(self):
         events = [{"type": "assistant", "message": {"content": [
@@ -1530,7 +1581,8 @@ class TestPublicCLI(unittest.TestCase):
         self.assertFalse((self.tmp / "rec.log").exists(),
                          "dry-run must not invoke or version-probe the executable")
         manifest = json.loads((output / "manifest.json").read_text())
-        self.assertEqual(manifest["commit"], self.commit)
+        # Commit provenance is encoded; decode and verify it recovers the exact id.
+        self.assertEqual(run_eval.decode_git_oid(manifest["commit"]), self.commit)
         self.assertTrue(manifest["dry_run"])
         self.assertIsNone(manifest["executable"])
         plugin_skill = output / "with-skill" / "plugin" / "skills" / "starting-initiatives" / "SKILL.md"
@@ -1859,6 +1911,72 @@ class TestPublicCLI(unittest.TestCase):
         self.assertNotIn("30000", init["keys"])
         self.assertNotIn("1", init["keys"])
 
+    # -- correction: reversible encoded provenance for Git object ids -----------
+
+    def test_provenance_ids_encoded_and_recoverable(self):
+        fake = make_scalar_collision_fake(self.tmp)
+        tokens = {
+            "D7Y_EVAL_MODEL": "glm-4.7", "D7Y_EVAL_NUM": "30000",
+            "D7Y_EVAL_ONE": "1", "D7Y_EVAL_T": "true",
+            "D7Y_EVAL_F": "false", "D7Y_EVAL_N": "null",
+        }
+        settings = make_user_settings(self.tmp, env=tokens)
+        output = self.tmp / "out"
+        proc = run_cli(self.repo, "skills/starting-initiatives/evals/evals.json",
+                       "start-new-initiative", output, claude=fake, user_settings=settings)
+        self.assertNotEqual(proc.returncode, 2, proc.stderr)
+        token_list = list(tokens.values())
+        # (1) No imported value anywhere — value-aware, no exemptions (incl. "1").
+        assert_no_imported_value_anywhere(self, output, proc.stdout, proc.stderr, token_list)
+        # (2) manifest / checks / source-status remain valid JSON.
+        manifest = json.loads((output / "manifest.json").read_text())
+        json.loads((output / "checks.json").read_text())
+        status = json.loads((output / "source-status.json").read_text())
+        # (3) Encoded commit decodes to the exact resolved commit, verifiable in Git.
+        commit_decoded = run_eval.decode_git_oid(manifest["commit"])
+        self.assertEqual(commit_decoded, self.commit)
+        self.assertEqual(_git(self.repo, "rev-parse", self.commit), commit_decoded)
+        self.assertEqual(_git(self.repo, "cat-file", "-t", commit_decoded), "commit")
+        # (4) Encoded capability blob ids decode to real Git blobs at the commit.
+        for key, enc in manifest["capability_object_ids"].items():
+            decoded = run_eval.decode_git_oid(enc)
+            self.assertEqual(decoded, _git(self.repo, "rev-parse", f"{self.commit}:{key}"))
+            self.assertEqual(_git(self.repo, "cat-file", "-t", decoded), "blob")
+        # (5) Encoded plugin skill blob id decodes to the staged SKILL.md blob.
+        self.assertEqual(
+            run_eval.decode_git_oid(manifest["plugin_object_ids"]["skill.md"]),
+            _git(self.repo, "rev-parse", f"{self.commit}:skills/starting-initiatives/SKILL.md"),
+        )
+        # (6) Encoded selected-input object ids decode to real Git blobs by path,
+        #     in the manifest and the per-arm selected-objects.json artifact.
+        for arm in ("with_skill", "baseline"):
+            staged = manifest["selected_objects"][arm]
+            for obj in staged:
+                decoded = run_eval.decode_git_oid(obj["object_id"])
+                self.assertEqual(decoded,
+                                 _git(self.repo, "rev-parse", f"{self.commit}:{obj['source']}"))
+                self.assertEqual(_git(self.repo, "cat-file", "-t", decoded), "blob")
+        arm_objs = json.loads(
+            (output / "with-skill" / "artifacts" / "selected-objects.json").read_text())
+        for obj in arm_objs:
+            self.assertEqual(run_eval.decode_git_oid(obj["object_id"]),
+                             _git(self.repo, "rev-parse", f"{self.commit}:{obj['source']}"))
+        # (7) Source-before/after hashes decode to the exact status hashes; the
+        #     clean repo is unmutated (before == after) and mutation evidence is
+        #     fully recoverable from the encoded provenance. (The ``mutated``
+        #     boolean may be sentinelized when "false" is an imported token, per
+        #     the scalar-collision policy; mutation->validity is exercised by the
+        #     separate source-mutation test, which uses a non-colliding token.)
+        expected_hash = run_eval._status_hash(_git(self.repo, "status", "--porcelain"))
+        self.assertEqual(run_eval.decode_git_oid(status["before_hash"]), expected_hash)
+        self.assertEqual(run_eval.decode_git_oid(status["after_hash"]), expected_hash)
+        self.assertEqual(run_eval.decode_git_oid(status["before_hash"]),
+                         run_eval.decode_git_oid(status["after_hash"]))
+        self.assertEqual(run_eval.decode_git_oid(manifest["source_status_before_hash"]),
+                         expected_hash)
+        # (8) No raw source path leaks into the manifest.
+        self.assertNotIn(str(self.repo), (output / "manifest.json").read_text())
+
     # -- correction: source mutation invalidates machine-readable checks --------
 
     def test_source_mutation_invalidates_checks(self):
@@ -1886,7 +2004,9 @@ class TestPublicCLI(unittest.TestCase):
         # Source-before/after evidence recorded and complete inventory emitted.
         status = json.loads((output / "source-status.json").read_text())
         self.assertTrue(status["mutated"])
-        self.assertNotEqual(status["before_hash"], status["after_hash"])
+        # Encoded hashes decode to distinct exact hashes (mutation detectable).
+        self.assertNotEqual(run_eval.decode_git_oid(status["before_hash"]),
+                            run_eval.decode_git_oid(status["after_hash"]))
         _assert_complete_inventory(self, output)
         for arm in ("with-skill", "baseline"):
             self.assertTrue((output / arm / "artifacts" / "checker.json").exists())
@@ -2150,14 +2270,14 @@ class TestPublicCLI(unittest.TestCase):
                 "start-new-initiative", output, claude=fake,
                 user_settings=make_user_settings(self.tmp))
         staged = json.loads((output / "manifest.json").read_text())["selected_objects"]["with_skill"]
-        ids = {o["object_id"] for o in staged}
+        ids = {run_eval.decode_git_oid(o["object_id"]) for o in staged}
         (self.repo / "initiatives" / "README.md").write_text("DIRTY")
         out2 = self.tmp / "out2"
         run_cli(self.repo, "skills/starting-initiatives/evals/evals.json",
                 "start-new-initiative", out2, claude=fake,
                 user_settings=make_user_settings(self.tmp))
         staged2 = json.loads((out2 / "manifest.json").read_text())["selected_objects"]["with_skill"]
-        self.assertEqual({o["object_id"] for o in staged2}, ids)
+        self.assertEqual({run_eval.decode_git_oid(o["object_id"]) for o in staged2}, ids)
         self.assertNotIn("DIRTY", (out2 / "with-skill" / "workspace" / "initiatives" / "README.md").read_text())
 
     def test_output_inside_source_rejected(self):

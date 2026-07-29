@@ -264,6 +264,43 @@ Focused acceptance cases must include suppression canaries for user or project i
 
 ### Execution posture
 
+Tenth incremental correction (reversible encoded provenance), on branch
+`work/eval-execution-harness`, base `19a0c6c`. A prior review finding: redacting
+commit/blob object ids and source-status hashes destroys exact provenance —
+those ids are hex strings that can contain an imported token (e.g. the digit
+`1`), so substring redaction mangles them, yet storing them raw is forbidden and
+simply redacting them to `<redacted>` loses recoverability. Both requirements
+(exact provenance recoverable AND verifiable against Git; no imported value
+retained) are mandatory.
+
+Resolution: a documented, reversible provenance encoding
+(`encode_git_oid`/`decode_git_oid`). Each hex Git id is stored as
+`{"scheme": "git-oid-bytes", "offset": N, "bytes": [b0+N, ...]}` — the id's raw
+bytes as a JSON integer array offset by `N`. The encoding is collision-checked
+against the complete imported token set before writing: a numeric token collides
+with an integer only by EXACT equality (never by digit substring), so the
+smallest `N` for which structural redaction (`redact_obj`) is a no-op on the
+encoding is chosen; if none exists up to a bound, preflight fails safely before
+materialization. Because the encoding is clean, it survives `write_json`'s
+redaction unchanged, so the exact bytes are retained and valid JSON.
+`decode_git_oid` (for artifact review/tests) reverses it; the decoded hex is
+verified against Git via `git rev-parse`/`git cat-file`. Complete redaction is
+unchanged for all ordinary artifacts; the encoding is not permission to retain
+raw ids. Source-mutation policy is unchanged: `mutated` is still computed from
+the raw statuses in memory; the encoded before/after hashes are exact evidence
+(a colliding `mutated` boolean may be sentinelized by the scalar-collision
+policy, but mutation→machine-readable-validity is computed pre-redaction and is
+covered by the source-mutation test).
+
+Applied consistently to exact-provenance fields: manifest `commit`,
+`plugin_object_ids`, `capability_object_ids`, `selected_objects`,
+`source_status_before_hash`/`source_status_after_hash`; `source-status.json`
+`before_hash`/`after_hash`; per-arm `selected-objects.json`; the raw commit is
+no longer duplicated in `summary.md` (it points to the encoded manifest). Also
+fixed contradictory earlier feedback that claimed colliding scalars like `1`
+"remain preserved" — they do not; the scalar-collision policy replaces them with
+the sentinel.
+
 Ninth incremental correction (scalar-collision redaction policy), on branch
 `work/eval-execution-harness`, base `becd809`. A retained-review finding showed
 that the eighth correction's leak scan exempted the imported value `1`, and that
@@ -473,10 +510,14 @@ assertion dispatch; the complete D7Y result-shape gate; unsupported-trace
 - **Token-safety rule:** *(eighth correction)* the preflight no longer rejects
   values by length or digit content; structural redaction makes any string value
   safe and the real environment imports short/numeric values that must be
-  permitted. Only non-string/empty tokens are rejected. Accepted residual, by
-  design: a value that also appears as a JSON number/boolean/null field is
-  preserved there so typed fields stay typed (this is why a bare flag like `1`
-  is checked at its emitted string positions in tests, not globally).
+  permitted. Only non-string/empty tokens (and a token equal to the redaction
+  sentinel) are rejected. *(Superseded by the ninth correction's scalar-collision
+  policy: a number/boolean/null whose JSON form exactly equals an imported token
+  — e.g. number `1` vs token `"1"`, boolean `false` vs token `"false"` — is NO
+  LONGER preserved; it is replaced by the redaction sentinel so complete redaction
+  is not weakened. Non-colliding scalars keep value and type. The earlier
+  statement that such values are "preserved so typed fields stay typed" is
+  retracted as contradictory.)*
 - The first real `starting-initiatives` qualification pair, real skill-resource
   portability, production timeout behavior, suppression-canary effectiveness
   against the live CLI, the live `d7y` command/tool_result stream contract,
