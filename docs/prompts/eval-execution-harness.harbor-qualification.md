@@ -13,7 +13,7 @@ You are implementing the first Harbor qualification slice for D7Y's progressive 
 ## Handoff payload
 
 - Governing plan: `docs/plans/eval-execution-harness.md`
-- Base commit: `49d1bc3`
+- Base commit: `d13f2ad`
 - Assigned branch: `work/eval-execution-harness-harbor`
 - Assigned worktree: `/home/noviadi/Developments/discovery/d7y-worktrees/eval-execution-harness-harbor`
 - Commit authority: explicitly granted on the assigned branch only
@@ -36,6 +36,10 @@ Use Harbor `0.6.5` and local Docker only. If Harbor cannot be installed, `harbor
 
 The initial fixed task limits are setup 600 seconds, agent 600 seconds, verifier 120 seconds, 2 CPUs, 4096 MiB memory, and 10240 MiB storage. Configure explicit non-public network policies for setup, agent, and verifier. Record the exact Claude authentication mechanism and imported key names, never values. If Claude cannot operate under an explicit allowlist, stop and return the network decision.
 
+Do not read or mount the host user's `~/.claude/settings.json`. Build a task-scoped Claude settings bundle with only approved tool, MCP, instruction, and persistence controls. Inject authentication, endpoint/proxy, and model/provider values through an explicit Harbor runtime environment allowlist; do not put secret values in `task.toml`, Dockerfiles, prompts, logs, or artifacts. Reject unallowlisted routing variables instead of inheriting them. Record requested model separately from effective model/provider.
+
+Choose and qualify one API topology: an external allowlisted HTTPS proxy/custom endpoint, or a Harbor Docker Compose sidecar proxy that is the only component allowed to reach the upstream API. Record endpoint/proxy identity and configuration digest, upstream provider/model mapping, and imported key names without values. A requested `claude-sonnet-5` does not establish that model was used; fail closed if the effective model/provider or endpoint identity cannot be observed.
+
 ## Runtime payload boundary
 
 For the first D7Y case, the agent payload is exactly:
@@ -56,7 +60,7 @@ Implement only the first qualification slice:
 
 1. A disposable Harbor isolation task with positive and deliberately broken probes.
 2. A disposable skill treatment pair with and without skill injection.
-3. Harbor Claude Code integration qualification for availability, invocation evidence, final response, tool activity, timeout, and failure capture.
+3. Harbor Claude Code integration qualification for task-scoped settings, auth/endpoint injection, requested versus effective model/provider, availability, invocation evidence, final response, tool activity, timeout, and failure capture.
 4. Task/provenance normalization needed by D7Y; do not replace the D7Y schema or implement maturity scoring.
 
 Do not implement Phases 4–8 of the governing plan in this handoff. Do not reuse `evals/run_eval.py`, the frozen branch, its parser fixtures, or its host-side settings/plugin wrapper.
@@ -71,6 +75,7 @@ Run and report exact results for:
 - separate verifier with private checker material;
 - required-artifact absence and fail-closed behavior;
 - baseline/treatment skill provenance and leakage checks;
+- task-scoped Claude settings, explicit auth/endpoint injection, and requested/effective model checks;
 - Claude Code non-interactive execution and timeout/error capture;
 - `git diff --check`;
 - `python3 evals/validate_skill_evals.py`;
