@@ -230,21 +230,31 @@ Represent the route as a named, versioned API profile resolved when the Harbor t
 - exact Harbor allowed hosts and network mode;
 - redacted configuration digest and proxy image/configuration digest.
 
-For a direct endpoint, the generated task passes the endpoint and credentials through
-Harbor's approved environment interpolation and allowlists the endpoint host. For a
-proxy profile, the generated Docker Compose environment adds a proxy service; the
-agent points its Claude endpoint variable at that service, while only the proxy has
-the upstream network allowlist and upstream credentials. The proxy should emit a
-redacted request record (route, requested model, upstream status, and correlation
-ID) as a declared sidecar artifact. This proves routing without exposing the API
-credential or relying on Claude's final response.
+For a direct endpoint or external proxy, the generated task passes the endpoint and
+credential references through Harbor's approved environment interpolation and
+allowlists the exact host. Harbor documents `${HOST_VAR}` interpolation in
+`environment.env`; the qualification must verify the actual Harbor invocation and
+must not place the resolved secret in `task.toml`. The proxy should emit a redacted
+request record (route, requested model, upstream status, and correlation ID) through
+an independently controlled endpoint log or declared artifact. This proves routing
+without exposing the API credential or relying on Claude's final response.
 
-Support two qualified API topologies, selecting one per run:
+Harbor's Docker Compose support can add a proxy service, and the `main` agent
+container can reach it by service name. However, Compose services share the task
+network and Harbor's documented network policy is applied to the environment/agent
+phase, not automatically as a distinct egress firewall per service. A sidecar is
+therefore not evidence that the agent cannot also reach the upstream. Treat sidecar
+routing as a Docker-specific follow-on until a direct-egress negative test or an
+additional provider-enforced network boundary proves otherwise. Sidecar request logs
+may be collected with Harbor's `service` artifact entries, but they must be captured
+before separate-verifier teardown.
 
-- **External proxy:** the agent reaches an approved HTTPS proxy or custom API endpoint through an exact Harbor allowlist; the proxy handles upstream authentication and any model translation.
-- **Harbor sidecar proxy:** a Docker Compose sidecar receives agent requests on an internal service name; only the sidecar reaches the upstream API. Sidecar configuration and upstream identity are hashed and recorded, while credentials remain runtime-only.
+Support API topologies progressively:
 
-The first qualification must prove the selected topology with a harmless request and a known response. It must record the API profile, route identity, proxy request record when applicable, requested model, effective model/provider when available, and authentication key names. It must fail with `evidence_error` or `agent_error` when the route cannot be established, and with `pair_error` when baseline and treatment receive different API profiles. Effective model/provider is useful provenance, but route evidence comes from the proxy or endpoint boundary, not from the final response.
+- **Foundation — external proxy/custom endpoint:** the agent reaches an approved HTTPS endpoint through an exact Harbor allowlist; the proxy handles upstream authentication and any model translation. This is the first topology to qualify because Harbor directly supports the endpoint allowlist and task environment injection.
+- **Follow-on — Docker Compose sidecar:** a Compose sidecar receives agent requests on an internal service name. Sidecar configuration and upstream identity are hashed and recorded, credentials remain runtime-only, and direct agent-to-upstream access must be tested separately. This topology is Docker-specific; Harbor documents that many cloud providers do not support Compose environments.
+
+The first qualification must prove the external proxy/custom endpoint topology with a harmless request and a known response. It must record the API profile, route identity, proxy request record, requested model, effective model/provider when available, and authentication key names. It must fail with `evidence_error` or `agent_error` when the route cannot be established, and with `pair_error` when baseline and treatment receive different API profiles. Effective model/provider is useful provenance, but route evidence comes from the proxy or endpoint boundary, not from the final response.
 
 ## Progressive implementation sequence
 
