@@ -189,6 +189,45 @@ The qualification result is one of:
 
 Only `qualified` supports the full D7Y invocation contract. No qualification outcome promotes a skill or establishes stable improvement.
 
+## Claude configuration and API boundary
+
+The frozen runner demonstrated a configuration failure that must not be reproduced in Harbor. It read only the top-level `env` object from the host user's `~/.claude/settings.json`, imported every key/value into the Claude process, and overrode only `CLAUDE_CONFIG_DIR`, `PWD`, `TMPDIR`, and `PATH`. Model, provider, endpoint, and authentication variables therefore remained able to override the requested CLI model. A requested `claude-sonnet-5` and an observed routed model such as `glm-4.7` are different facts and must never be collapsed into one setting.
+
+The Harbor implementation must not read or mount the host `~/.claude/settings.json`. It must generate or materialize a task-scoped Claude configuration bundle inside the agent image or runtime workspace:
+
+1. **Harness settings** — a committed, reviewable settings file containing only D7Y-approved behavior controls such as project instruction policy, tool permissions, MCP policy, and persistence settings. It must not inherit user settings.
+2. **Runtime environment** — an explicit allowlist of configuration keys injected by Harbor. Values are supplied through approved runtime secret/configuration inputs, never committed to task files or printed in artifacts.
+3. **Model contract** — a requested model, provider, and effective model identity recorded separately. Any model/provider environment key not explicitly declared for the run is rejected before agent startup.
+4. **API endpoint contract** — the endpoint or proxy identity, configuration digest, upstream provider, and allowed hostnames are recorded. A credential value is never recorded.
+
+The allowed runtime configuration must distinguish:
+
+- authentication inputs, such as an approved API key or token name;
+- endpoint/proxy inputs, such as an approved `ANTHROPIC_BASE_URL` or equivalent Claude endpoint setting;
+- model/provider routing inputs, which must be explicitly pinned or explicitly prohibited;
+- unrelated inherited settings, which must be absent rather than silently accepted.
+
+Configuration precedence must be explicit and testable: the task-scoped bundle and
+allowlisted runtime environment are the only configuration inputs; the selected
+agent integration's documented command-line request is recorded as the requested
+value; and the observed provider response or runtime metadata establishes the
+effective value. No host environment or host settings file participates. At
+minimum, the adapter must classify routing and credential variables such as
+`ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`,
+`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK`, and
+`CLAUDE_CODE_USE_VERTEX` (where supported by the selected Claude Code version),
+then either pin them explicitly or reject them before startup. This classification
+must be version-tested rather than inferred from a successful final response.
+
+Harbor task configuration may reference runtime environment values, but must not contain secret values. The task must set explicit network policy for setup, agent, and verifier. The agent may reach only the declared API endpoint or proxy. The verifier must not receive agent credentials or API configuration unless a specific check requires a redacted configuration identity.
+
+Support two qualified API topologies, selecting one per run:
+
+- **External proxy:** the agent reaches an approved HTTPS proxy or custom API endpoint through an exact Harbor allowlist; the proxy handles upstream authentication and any model translation.
+- **Harbor sidecar proxy:** a Docker Compose sidecar receives agent requests on an internal service name; only the sidecar reaches the upstream API. Sidecar configuration and upstream identity are hashed and recorded, while credentials remain runtime-only.
+
+The first qualification must prove the selected topology with a harmless request and a known response. It must record requested model, effective model/provider, endpoint identity, proxy identity/configuration digest, and authentication key names. It must fail with `evidence_error` or `agent_error` when the effective model/provider or endpoint cannot be established, and with `pair_error` when baseline and treatment receive different configuration. Do not infer model or API identity from the final response.
+
 ## Progressive implementation sequence
 
 ### Phase 0 — Freeze and reset the implementation direction
@@ -240,10 +279,13 @@ Run the synthetic positive and negative prompts with Harbor's Claude Code integr
 - target-specific invocation;
 - tool calls and command results;
 - final response;
+- requested model and effective model/provider;
+- API endpoint/proxy identity and configuration digest;
+- authentication mechanism and imported key names, never values;
 - model and usage telemetry;
 - timeout and error state.
 
-Do not recreate the old settings/plugin wrapper inside the Harbor task unless a specific Harbor integration gap requires a bounded adapter and the gap is recorded.
+Do not recreate the old host settings/plugin wrapper inside the Harbor task. Implement the explicit task-scoped configuration bundle and API topology above. If the Harbor Claude integration does not expose a supported way to inject those settings or environment values, stop and record the integration gap rather than importing host `settings.json` or weakening the model/provider checks.
 
 **Exit evidence:** a Harbor-specific capability record and parser or adapter tests, with unsupported telemetry explicitly listed.
 
@@ -316,6 +358,9 @@ Each paired iteration should retain or reference:
 - Harbor version and task/job configuration;
 - environment/provider and image digest;
 - agent integration and model configuration;
+- requested and effective model/provider;
+- API endpoint/proxy identity and configuration digest;
+- authentication mechanism and imported key names, never values;
 - baseline/treatment distinction;
 - network, user, resource, and timeout posture;
 - task and verifier manifests;
