@@ -431,6 +431,55 @@ def make_jsonl_redaction_fake(tmp: Path) -> Path:
     return _write_fake(tmp, "jsonl-redaction", behavior)[0]
 
 
+def make_multivalue_redaction_fake(tmp: Path) -> Path:
+    """Emit real-shaped imported values across all redaction channels.
+
+    Reads three representative runtime-setting values from the environment:
+    a short model id (``D7Y_EVAL_MODEL``, e.g. ``glm-4.7``), an all-digit
+    timeout (``D7Y_EVAL_TIMEOUT``, e.g. ``30000``), and a one-digit flag
+    (``D7Y_EVAL_FLAG``, e.g. ``1``). Each is emitted into JSONL string values,
+    raw stdout text, raw stderr, the final response, a retained filename, and a
+    symlink target, alongside numeric/boolean/null/array fields that must keep
+    their types. Proves preflight permits these values and structural redaction
+    scrubs them without corrupting retained JSON.
+    """
+    behavior = (
+        "import glob as _glob\n"
+        "_matches = _glob.glob(os.path.join(_plugin or '', 'skills', '*', 'SKILL.md')) if _plugin else []\n"
+        "_has_skill = bool(_matches)\n"
+        "_skill_name = os.path.basename(os.path.dirname(_matches[0])) if _matches else None\n"
+        "_target = ('d7y-eval-session:' + _skill_name) if _has_skill else None\n"
+        "_skills = [_target, 'doctor'] if _has_skill else ['doctor']\n"
+        "_pname = 'd7y-eval-session' if _has_skill else 'd7y-eval-control'\n"
+        "_sid = 'mv-' + str(os.getpid())\n"
+        "_model = os.environ.get('D7Y_EVAL_MODEL', '')\n"
+        "_timeout = os.environ.get('D7Y_EVAL_TIMEOUT', '')\n"
+        "_flag = os.environ.get('D7Y_EVAL_FLAG', '')\n"
+        "print(json.dumps({'type': 'system', 'subtype': 'init', 'session_id': _sid, "
+        "'tools': ['Skill', 'Read', 'Write', 'Edit', 'Bash'], 'model': 'claude-sonnet-5', "
+        "'skills': _skills, 'plugins': [{'name': _pname, 'path': _plugin or '', 'version': '0.0.1'}], "
+        "'mcp_servers': [], 'permissionMode': 'dontAsk', "
+        "'model_echo': 'routed ' + _model, 'timeout_echo': 'timeout=' + _timeout, "
+        "'flag_echo': 'flag=' + _flag, "
+        "'meta': {'count': 42, 'flag': True, 'zero': None, 'arr': [2, 3, 4]}}))\n"
+        "print(json.dumps({'type': 'assistant', 'message': {'role': 'assistant', 'model': _model,\n"
+        "    'content': [{'type': 'text', 'text': 'use ' + _model + ' with ' + _timeout + ' and ' + _flag}]}}))\n"
+        "sys.stderr.write('stderr ' + _model + ' ' + _timeout + ' ' + _flag + '\\n')\n"
+        "if _root and _has_skill:\n"
+        "    open(os.path.join(_root, _model + '.md'), 'w').write('content ' + _timeout)\n"
+        "    try:\n"
+        "        os.symlink('/tmp/' + _flag + '-target', os.path.join(_root, _timeout + '.link'))\n"
+        "    except OSError:\n"
+        "        pass\n"
+        "print(json.dumps({'type': 'result', 'subtype': 'success', "
+        "'result': 'final ' + _model + ' ' + _timeout + ' ' + _flag,\n"
+        "    'is_error': False, 'num_turns': 3, 'permission_denials': [],\n"
+        "    'modelUsage': {'claude-sonnet-5': {'provider': 'firstParty', 'canonicalModel': 'claude-sonnet-5'}}}))\n"
+        "sys.exit(0)\n"
+    )
+    return _write_fake(tmp, "multivalue", behavior)[0]
+
+
 def make_canary_leak_fake(tmp: Path, channel: str) -> Path:
     sig = CANARY_SIGNAL
     siglit = repr(sig)
@@ -998,20 +1047,27 @@ class TestRedactionUnit(unittest.TestCase):
 
 
 class TestRedactionPreflight(unittest.TestCase):
-    """Unsafe imported redaction values are rejected atomically, without leaking."""
+    """Real-shaped imported values are permitted; structural redaction keeps JSON safe."""
 
-    SAFE = "synthetic-safe-secret-value"
+    def test_real_shaped_runtime_values_accepted(self):
+        # The real qualification environment imports exactly these shapes: short
+        # model ids (len 7), all-digit timeouts, JSON literals, and one-digit
+        # flags. None may be rejected, because structural redaction handles them.
+        for value in (
+            "glm-4.7",            # short model id (len 6)
+            "glm-5.2",            # short model id (len 6)
+            "3000000",            # all-digit timeout
+            "1",                  # one-digit flag
+            "0",
+            "true", "false", "null",
+            "synthetic-safe-secret-value",
+        ):
+            run_eval.validate_redaction_tokens([value])  # no raise
 
-    def test_safe_token_accepted(self):
-        run_eval.validate_redaction_tokens([self.SAFE])  # no raise
-
-    def test_unsafe_tokens_rejected_without_leaking_value(self):
-        # Covers: short, JSON literal, all-digit (short and long), no-alphanumeric.
-        for value in ("123", "true", "false", "null", "----", "12345678", "--------"):
-            with self.assertRaises(run_eval.PreflightError) as cm:
-                run_eval.validate_redaction_tokens([value])
-            # The value itself must never appear in the rejection message.
-            self.assertNotIn(value, str(cm.exception))
+    def test_nonstring_and_empty_rejected_without_leaking(self):
+        for value in ("", 5, None):
+            with self.assertRaises(run_eval.PreflightError):
+                run_eval.validate_redaction_tokens([value])  # type: ignore[list-item]
 
 
 class TestCanaryScan(unittest.TestCase):
@@ -1594,22 +1650,68 @@ class TestPublicCLI(unittest.TestCase):
                     self.assertEqual(ev["<redacted>_key"], "k")
                     self.assertEqual(meta["deep"], "x-<redacted>-y")
 
-    # -- correction: unsafe imported redaction values rejected pre-output ------
+    # -- correction: real-shaped imported values permitted, fully redacted -----
 
-    def test_unsafe_imported_redaction_value_rejected_pre_output(self):
-        fake = make_invocation_recording_fake(self.tmp)
-        for value in ("123", "true", "null"):
-            settings = make_user_settings(self.tmp, env={"D7Y_EVAL_TEST_TOKEN": value})
-            output = self.tmp / f"out-{value}"
-            proc = run_cli(self.repo, "skills/starting-initiatives/evals/evals.json",
-                           "start-new-initiative", output, claude=fake, dry_run=True,
-                           user_settings=settings)
-            self.assertEqual(proc.returncode, 2, proc.stderr)
-            # No output root or partial staging is created.
-            self.assertFalse(output.exists(), f"value {value!r}: output root created")
-            # The unsafe value must not leak in diagnostics.
-            self.assertNotIn(value, proc.stdout)
-            self.assertNotIn(value, proc.stderr)
+    def test_real_shaped_imported_values_permitted_and_fully_redacted(self):
+        fake = make_multivalue_redaction_fake(self.tmp)
+        settings = make_user_settings(self.tmp, env={
+            "D7Y_EVAL_MODEL": "glm-4.7",      # short model id
+            "D7Y_EVAL_TIMEOUT": "30000",      # all-digit timeout
+            "D7Y_EVAL_FLAG": "1",             # one-digit flag
+        })
+        output = self.tmp / "out"
+        proc = run_cli(self.repo, "skills/starting-initiatives/evals/evals.json",
+                       "start-new-initiative", output, claude=fake, user_settings=settings)
+        # Preflight does not reject valid runtime settings (exit 2 == preflight).
+        self.assertNotEqual(proc.returncode, 2, proc.stderr)
+        self.assertTrue(output.exists())
+        # Captured CLI stdout/stderr never carry the specific values.
+        self.assertNotIn("glm-4.7", proc.stdout + proc.stderr)
+        self.assertNotIn("30000", proc.stdout + proc.stderr)
+        # The specific values are scrubbed from the whole retained output tree:
+        # contents, every path component, and symlink targets. (The bare flag "1"
+        # is checked at its emitted string positions below, since a single digit
+        # also occurs legitimately in numeric and hex fields by design.)
+        leaked = []
+        for p in output.rglob("*"):
+            rel = str(p)
+            if "glm-4.7" in rel or "30000" in rel:
+                leaked.append(("path", rel))
+            if p.is_symlink() and ("glm-4.7" in os.readlink(p) or "30000" in os.readlink(p)):
+                leaked.append(("symlink-target", rel))
+            if p.is_file():
+                try:
+                    txt = p.read_text(errors="ignore")
+                except OSError:
+                    continue
+                if "glm-4.7" in txt or "30000" in txt:
+                    leaked.append(("content", rel))
+        self.assertEqual(leaked, [], f"value leaked in: {leaked}")
+        # Every retained JSONL line parses; typed fields stay typed; every
+        # emitted value (including the flag "1") is gone from its string position.
+        for arm in ("with-skill", "baseline"):
+            text = (output / arm / "artifacts" / "trace.jsonl").read_text()
+            init = None
+            assistant_text = None
+            for line in text.splitlines():
+                if not line.strip():
+                    continue
+                ev = json.loads(line)  # must parse
+                if ev.get("type") == "system" and ev.get("subtype") == "init":
+                    init = ev
+                elif ev.get("type") == "assistant":
+                    assistant_text = ev["message"]["content"][0]["text"]
+            self.assertIsNotNone(init, f"{arm}: init event missing")
+            self.assertEqual(init["model_echo"], "routed <redacted>")
+            self.assertEqual(init["timeout_echo"], "timeout=<redacted>")
+            self.assertEqual(init["flag_echo"], "flag=<redacted>")  # flag "1" scrubbed
+            # Numeric, boolean, null, and array fields keep exact types/values.
+            self.assertEqual(init["meta"]["count"], 42)
+            self.assertIs(init["meta"]["flag"], True)
+            self.assertIsNone(init["meta"]["zero"])
+            self.assertEqual(init["meta"]["arr"], [2, 3, 4])
+            self.assertEqual(assistant_text,
+                             "use <redacted> with <redacted> and <redacted>")
 
     # -- correction: source mutation invalidates machine-readable checks --------
 

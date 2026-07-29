@@ -264,6 +264,24 @@ Focused acceptance cases must include suppression canaries for user or project i
 
 ### Execution posture
 
+Eighth incremental correction (preflight redaction gate over-rejection), on
+branch `work/eval-execution-harness`, base `935a869`. The seventh correction's
+preflight redaction gate rejected every token shorter than 8 characters and
+every all-digit token. That rule was wrong: the real qualification environment
+imports exactly those shapes — 7-character model ids (`glm-4.7`), all-digit
+timeouts (`API_TIMEOUT_MS`, `CLAUDE_CODE_AUTO_COMPACT_WINDOW`), and the
+one-digit flag `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` — so the corrected
+runner rejected the valid proxy environment before it could execute Claude and
+no live qualification artifact could be produced. The gate is now permissive:
+structural redaction (`redact_obj` preserves non-string scalars; `redact_jsonl`
+parses and re-serializes each event line) is what keeps retained JSON valid for
+arbitrary token values, so short/numeric/literal values are permitted and fully
+scrubbed from every string position. `validate_redaction_tokens` now only
+rejects non-string/empty tokens (a defensive invariant that never fires for
+real collected values). The source-mutation correction (blocker 2) is unchanged
+and its public test is retained. Verified offline that the real
+`~/.claude/settings.json` imported values now pass the gate.
+
 Seventh incremental correction (final-review blockers), on branch
 `work/eval-execution-harness`, base `7f4e91d`. Two final-review blockers in the
 retained-evidence and check-semantics contracts, both reproduced against the
@@ -301,7 +319,11 @@ Fifth incremental correction (live-binding defect pass), on branch `work/eval-ex
     text (too short, a JSON literal, all-digit, or devoid of alphanumeric
     characters) without echoing the value. `run_preflight` calls it after
     collecting imported tokens and before `output_dir.mkdir`, so no output root
-    or partial staging is created on rejection.
+    or partial staging is created on rejection. *(Revised in the eighth
+    correction: this content-based rule rejected the real qualification
+    environment — short model ids, numeric timeouts, the flag `1` — and was
+    replaced by a permissive defensive invariant, since structural redaction
+    makes content rejection unnecessary. See the eighth correction above.)*
   - `compute_checks` gains a `source_mutated` parameter; when true it records a
     `"source checkout mutated during the run"` pair-validity error, so a mutated
     source is represented in `checks.json` (`pair_validity: fail`,
@@ -345,10 +367,12 @@ python3 evals/run_eval.py --source-repo <repo> --suite <repo-relative-evals.json
    value (short, numeric, a JSON literal, or punctuation-only) used as a raw-text
    redaction token would broadly collide and corrupt output.
    `validate_redaction_tokens` rejects such values atomically before any write,
-   without leaking them. `test_unsafe_imported_redaction_value_rejected_pre_output`
-   proves no output root or partial staging is created and the value does not
-   leak; `TestRedactionPreflight` proves safe values are accepted and unsafe ones
-   rejected without appearing in the message.
+   without leaking them. *(Revised in the eighth correction: the content-based
+   rejection was removed because it rejected the real environment; structural
+   redaction now guarantees safety for all string values. Replaced by
+   `test_real_shaped_imported_values_permitted_and_fully_redacted`, which proves
+   real-shaped values are permitted and fully scrubbed while JSONL stays
+   parseable and typed.)*
 3. **Source mutation did not invalidate machine-readable checks.** `compute_checks`
    previously ran before post-run source integrity was incorporated, so
    finalization could record a mutation warning and nonzero exit while
@@ -395,11 +419,13 @@ assertion dispatch; the complete D7Y result-shape gate; unsupported-trace
   scrubbed as raw text and need not remain parseable; this is intentional and is
   covered by the malformed-line unit test. Raw `stderr.txt` remains raw-text
   redacted (stderr is not structured JSON).
-- **Token-safety rule:** the preflight rejects tokens shorter than 8 characters,
-  JSON literals, all-digit tokens, and tokens with no alphanumeric character. A
-  legitimate imported secret that happens to be very short or all-numeric would
-  be rejected rather than silently under-redacted; that is the intended safe
-  failure and surfaces as a preflight error for human review.
+- **Token-safety rule:** *(eighth correction)* the preflight no longer rejects
+  values by length or digit content; structural redaction makes any string value
+  safe and the real environment imports short/numeric values that must be
+  permitted. Only non-string/empty tokens are rejected. Accepted residual, by
+  design: a value that also appears as a JSON number/boolean/null field is
+  preserved there so typed fields stay typed (this is why a bare flag like `1`
+  is checked at its emitted string positions in tests, not globally).
 - The first real `starting-initiatives` qualification pair, real skill-resource
   portability, production timeout behavior, suppression-canary effectiveness
   against the live CLI, the live `d7y` command/tool_result stream contract,

@@ -281,43 +281,35 @@ def collect_env_tokens(path: Path) -> list[str]:
     return tokens
 
 
-# JSON literals that, as raw-text redaction tokens, would collide with ordinary
-# structured output and corrupt it.
-_UNSAFE_LITERAL_TOKENS = {"true", "false", "null"}
-
-
-def _unsafe_redaction_token(token: str) -> bool:
-    """True if a value is unsafe to apply as a raw-text redaction token.
-
-    Such a token is low-entropy or broadly colliding: too short to be specific,
-    a JSON literal, all digits (collides with numeric fields), or devoid of any
-    alphanumeric character (collides with punctuation/metadata). Applying any of
-    these to raw stdout/stderr would scrub large unrelated regions and can break
-    retained JSON. We refuse rather than silently omit redaction.
-    """
-    if len(token) < 8:
-        return True
-    if token.lower() in _UNSAFE_LITERAL_TOKENS:
-        return True
-    if token.isdigit():
-        return True
-    if not any(ch.isalnum() for ch in token):
-        return True
-    return False
-
-
 def validate_redaction_tokens(tokens: list[str]) -> None:
-    """Atomically reject unsafe imported redaction values before any write.
+    """Defensive invariant for imported redaction values, before any write.
 
-    Raises ``PreflightError`` (without echoing the value) if any imported token
-    is unsafe to apply to arbitrary raw text. Must run before materialization or
-    staging writes so no partial output root is created.
+    Every imported environment value is added to the redaction set and scrubbed
+    from all retained string content; none is silently omitted. This guard does
+    NOT reject values for length, digit-only content, or being a JSON literal:
+    structural redaction is what makes arbitrary values safe.
+
+    ``redact_obj`` preserves non-string scalars and only substring-replaces
+    inside JSON string keys/values, and ``redact_jsonl`` parses each event line
+    and re-serializes it. A redaction token therefore never corrupts JSON
+    structure: numbers, booleans, nulls, arrays, and object shape survive. That
+    is precisely why the original numeric-corruption bug (a numeric token turning
+    a number into a bare ``<redacted>``) is fixed by structural redaction rather
+    than by rejecting numeric tokens. The real qualification environment imports
+    short model ids (length 7), all-digit timeouts, and the flag ``"1"``; those
+    are fully redacted from every string position and must be permitted.
+
+    The only values rejected here are non-string or empty tokens, which cannot
+    arrive via ``collect_env_tokens`` (it yields only non-empty strings) but are
+    defended against so the redaction set is always well-formed. Accepted
+    residual, by design: a value that also appears as a JSON number/boolean/null
+    field is preserved there so typed fields stay typed.
     """
     for token in tokens:
-        if token and _unsafe_redaction_token(token):
+        if not isinstance(token, str) or not token:
             raise PreflightError(
-                "an imported environment redaction value is unsafe to apply to "
-                "raw output (too short or broadly colliding); refusing to run"
+                "an imported environment redaction value is not a non-empty "
+                "string; refusing to run"
             )
 
 
@@ -2211,9 +2203,10 @@ def run_preflight(args: argparse.Namespace, ctx: "RunContext") -> Preflight:
     )
     # Acquire imported-value redaction tokens before any validation can expose them.
     imported_tokens = collect_env_tokens(user_settings_path)
-    # Atomically reject unsafe imported values before any output/staging write.
-    # This must precede materialization so no partial output root is created and
-    # so a low-entropy value is never applied to raw retained output.
+    # Defensive invariant before any output/staging write: every imported value
+    # is a non-empty string. Structural redaction (not content rejection) is what
+    # keeps retained JSON valid for short/numeric/literal values, so legitimate
+    # runtime settings are permitted.
     validate_redaction_tokens(imported_tokens)
 
     seed_repo_paths = ["initiatives/README.md"]
