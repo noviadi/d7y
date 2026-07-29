@@ -13,7 +13,7 @@ You are implementing the first Harbor qualification slice for D7Y's progressive 
 ## Handoff payload
 
 - Governing plan: `docs/plans/eval-execution-harness.md`
-- Base commit: `d1a9287`
+- Base commit: `c9f371a`
 - Assigned branch: `work/eval-execution-harness-harbor`
 - Assigned worktree: `/home/noviadi/Developments/discovery/d7y-worktrees/eval-execution-harness-harbor`
 - Commit authority: explicitly granted on the assigned branch only
@@ -36,9 +36,9 @@ Use Harbor `0.6.5` and local Docker only. If Harbor cannot be installed, `harbor
 
 The initial fixed task limits are setup 600 seconds, agent 600 seconds, verifier 120 seconds, 2 CPUs, 4096 MiB memory, and 10240 MiB storage. Configure explicit non-public network policies for setup, agent, and verifier. Record the exact Claude authentication mechanism and imported key names, never values. If Claude cannot operate under an explicit allowlist, stop and return the network decision.
 
-Do not read or mount the host user's `~/.claude/settings.json`. Build a task-scoped Claude settings bundle with only approved tool, MCP, instruction, and persistence controls. Define one named API-routing profile for the qualification: direct custom endpoint or Compose proxy. The profile must specify the agent-visible endpoint, Harbor host allowlist, runtime secret/key names, upstream mapping, and redacted configuration digests. Inject endpoint/proxy and authentication values through an explicit Harbor runtime environment allowlist; do not put secret values in `task.toml`, Dockerfiles, prompts, logs, or artifacts. Record route evidence from the endpoint/proxy boundary and record requested model separately from effective model/provider.
+Do not read or mount the host user's `~/.claude/settings.json`. Build a task-scoped Claude settings bundle with only approved tool, MCP, instruction, and persistence controls. For this qualification, use one named external HTTPS proxy/custom-endpoint API profile. The profile must specify the agent-visible endpoint, Harbor host allowlist, runtime secret/key names, upstream mapping, and redacted configuration digests. Inject endpoint/proxy and authentication values through an explicit Harbor runtime environment allowlist; Harbor's `${HOST_VAR}` task interpolation must be verified at runtime, and secret values must not appear in `task.toml`, Dockerfiles, prompts, logs, or artifacts. Record route evidence from the endpoint/proxy boundary and record requested model separately from effective model/provider. Do not claim a Compose sidecar provides per-service egress isolation; that is follow-on work.
 
-Choose and qualify one API topology: an external allowlisted HTTPS proxy/custom endpoint, or a Harbor Docker Compose sidecar proxy that is the only component allowed to reach the upstream API. For the proxy topology, collect a redacted sidecar request record as an artifact. Record endpoint/proxy identity and configuration digest, upstream provider/model mapping, and imported key names without values. A requested `claude-sonnet-5` does not establish that model was used; fail closed if route evidence cannot be observed.
+Qualify the external allowlisted HTTPS proxy/custom endpoint first. Record endpoint/proxy identity and configuration digest, upstream provider/model mapping, and imported key names without values. A requested `claude-sonnet-5` does not establish that model was used; fail closed if route evidence cannot be observed. Do not implement the Docker Compose sidecar topology in this handoff.
 
 ## Runtime payload boundary
 
