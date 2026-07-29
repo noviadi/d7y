@@ -85,7 +85,7 @@ Each case defines:
 - optional files to stage into the agent environment;
 - focused assertions.
 
-Fixture `source` paths are relative to the skill directory. Fixture `destination` paths are relative to the task's declared agent workspace. Both must remain inside their intended roots. Eval definitions, expected outcomes, assertions, grader source, benchmark summaries, and harness control files must not be staged into the agent environment.
+Fixture `source` paths are relative to the skill directory. Fixture `destination` paths are relative to the task's declared agent workspace. Both must remain inside their intended roots. Eval definitions, expected outcomes, assertions, grader source, benchmark summaries, and harness control files must not be staged into the agent environment. Private expected outcomes, assertions, and grader/checker source belong in the separate verifier environment, not in the agent environment.
 
 Do not require assertions to be complete before the first run. Initial Harbor traces and verifier artifacts reveal what is both important and observable. Tighten assertions only after inspecting those artifacts.
 
@@ -110,9 +110,9 @@ The agent environment must use:
 - a fresh or reset environment for each arm;
 - only declared task inputs and the treatment skill, when applicable.
 
-Use Harbor's separate verifier environment by default. It receives only declared agent outputs and explicitly collected evidence. It must not receive eval definitions, expected outcomes, assertions, grader source, the skill source repository, or harness control files. Shared verifier mode is an exception requiring a recorded reason because it can observe agent-mutated state and installed packages.
+Use Harbor's separate verifier environment by default. It contains private expected outcomes, assertions, grader/checker source, and harness controls, and receives only allowlisted agent outputs and explicitly collected evidence. The agent environment must not receive those private verifier materials or the skill source repository. Shared verifier mode is an exception requiring a recorded reason because it can observe agent-mutated state and installed packages.
 
-Harbor skill injection proves that skill content was made available to the treatment. It does not prove that the agent invoked the skill. Invocation requires a trustworthy runtime-owned signal from the selected agent integration. Final-response wording, skill availability, or a successful outcome alone is insufficient.
+Harbor skill injection proves that skill content was made available to the treatment. Record both the content digest and resolved source commit; missing either is an evidence error. Availability does not prove invocation. Invocation requires a trustworthy runtime-owned signal from the selected agent integration. Final-response wording, skill availability, or a successful outcome alone is insufficient.
 
 If the selected Harbor agent integration cannot expose invocation, the run may produce explicitly scoped outcome evidence only with human approval. It remains unqualified for invocation evaluation and must not be represented as satisfying the full skill contract.
 
@@ -129,7 +129,7 @@ Keep these evidence dimensions distinct:
 | Outcome | Did it produce the required decision, artifact, or state? | Separate verifier and independent D7Y checker |
 | Quality | Is the result coherent, useful, evidence-aware, and appropriate? | Structured rubric or human review |
 | Efficiency | What did the skill cost? | Duration, tokens, tools, retries, permissions when available |
-| Safety | Did it preserve permission and data boundaries under misuse? | Explicit safety and injection probes |
+| Safety (later schema migration) | Did it preserve permission and data boundaries under misuse? | Explicit safety and injection probes |
 
 An assertion declares its dimension and grading kind:
 
@@ -213,7 +213,7 @@ Use failed assertions, execution traces, verifier evidence, and specific human f
 
 Remove assertions that pass equally without the skill; they do not demonstrate value. Investigate checks that fail in both configurations before changing the skill. Treat inconsistent results as evidence of a flaky case, ambiguous instruction, uncontrolled environment, agent integration drift, or stochastic behavior requiring repeated variants or runs.
 
-When skill revisions begin, preserve the prior accepted skill snapshot and add held-out cases before claiming regression safety. Curate trajectories by quality, diversity, and difficulty before using them to revise a skill. Do not allow automated skill evolution to silently remove safety constraints or convert unverified traces into canon.
+When skill revisions begin, preserve the prior accepted skill snapshot and add held-out cases before claiming regression safety. Before authoring safety assertions, migrate `evals/skill-evals.schema.json` and `evals/validate_skill_evals.py` to accept a `safety` dimension. Curate trajectories by quality, diversity, and difficulty before using them to revise a skill. Do not allow automated skill evolution to silently remove safety constraints or convert unverified traces into canon.
 
 Keep skills lean as coverage grows. Move repeated mechanical work into deterministic capability scripts or verifier checks rather than expanding prose. Periodically evaluate whether removing instructions preserves or improves results.
 

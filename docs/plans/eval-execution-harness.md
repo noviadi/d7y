@@ -16,8 +16,8 @@ The first objective is not to build ideal evals, a benchmark service, or a compl
 
 - a synthetic D7Y case runs in a real isolated environment;
 - the same case can run with and without a target skill;
-- the verifier cannot read the agent's private grading material;
-- failures are classified as environment, agent, evidence, verifier, or skill failures;
+- the agent cannot read the verifier's private grading material;
+- failures use the canonical `environment_error`, `pair_error`, `agent_error`, `evidence_error`, `verifier_error`, `assertion_fail`, or `ungradable` identifiers;
 - no result is called a skill improvement or maturity decision prematurely.
 
 Harbor owns task environments, agent execution, resource and network policy, artifact transfer, and verifier isolation. D7Y owns the eval contract, case definitions, treatment comparison, D7Y-specific checks, provenance, and interpretation.
@@ -50,7 +50,7 @@ This establishes isolation within the selected Harbor provider configuration. It
 
 ### Separate the verifier by default
 
-Use Harbor's separate verifier environment. The verifier receives only declared agent outputs and explicitly collected evidence. It must not receive the eval definition, expected outcomes, assertions, grader source, skill source repository, or harness control files.
+Use Harbor's separate verifier environment. The agent receives only declared task inputs and treatment skill content. The verifier may contain private expected outcomes, assertions, grader/checker source, and harness controls; those materials must be built into or mounted only in the verifier environment. The verifier receives only allowlisted agent outputs and explicitly collected evidence from the agent environment.
 
 Harbor documents shared verifier mode as able to see agent-mutated state and installed packages. Shared mode is therefore an explicit exception requiring a written reason.
 
@@ -64,7 +64,7 @@ same task, image, prompt, model, tools, permissions, resources, and network
 └── treatment: target skill at an immutable content revision
 ```
 
-Use Harbor's skill injection and recorded digest or Git commit where possible. Do not inject D7Y expected outcomes, process instructions, grader details, or target-specific commands into the agent prompt merely to make grading easier.
+Use Harbor's skill injection and require both the skill content digest and resolved source commit in the run manifest. Stop if either provenance value cannot be recorded. Do not inject D7Y expected outcomes, process instructions, grader details, or target-specific commands into the agent prompt merely to make grading easier.
 
 ### Invocation remains a separate evidence question
 
@@ -96,7 +96,7 @@ Missing telemetry is `unavailable`, not zero. A failed baseline outcome does not
 - Explicit `no-network` or allowlisted network policy.
 - Separate verifier environment.
 - Declared artifact transfer and fail-closed required-artifact checks.
-- Harbor task, image, agent, skill, and provider provenance.
+- Harbor task, image, agent, skill, and provider provenance, including skill content digest and resolved source commit.
 - Raw agent logs or traces available to the verifier as declared artifacts.
 - A thin D7Y adapter that translates D7Y cases into Harbor tasks and Harbor results into D7Y evidence layers.
 - Dependency-light D7Y checks for paths, JSON/schema validity, command evidence, and the existing initiative checker.
@@ -147,7 +147,11 @@ The adapter should be deliberately small. It may construct Harbor task files, se
 
 ## Harbor qualification contract
 
-Before migrating a real D7Y suite, prove these properties with a disposable synthetic task:
+Before migrating a real D7Y suite, prove these properties with a disposable synthetic task.
+
+The first handoff uses Harbor `v0.6.5`, installed with `uv tool install harbor==0.6.5`, and local Docker. Re-qualify if the Harbor version, Docker context, agent integration, or provider changes. Use these initial fixed limits: setup 600 seconds, agent 600 seconds, verifier 120 seconds, 2 CPUs, 4096 MiB memory, and 10240 MiB storage. The task must declare an explicit non-public network policy for setup, agent, and verifier; the exact Claude authentication endpoint allowlist and imported credential key names must be recorded during preflight without recording values. If the selected Claude authentication mechanism cannot operate under an explicit allowlist, stop and return the network decision rather than using Harbor's public default.
+
+The committed runtime payload for the first D7Y case is exactly: `SKILL.md`, `initiatives/README.md`, `d7y`, and `scripts/check-initiatives.py`, plus the case-declared fixture files. The agent image must not contain the source checkout, eval definitions, expected outcomes, assertions, grader source, benchmark summaries, or harness control files. The verifier image may contain the private checker and expected outcomes and receives only declared outputs and evidence.
 
 ### Environment
 
@@ -156,14 +160,14 @@ Before migrating a real D7Y suite, prove these properties with a disposable synt
 - The agent user and effective working directory are recorded.
 - CPU, memory, storage, timeout, and network policy are applied or reported as unsupported.
 - `network_mode` is explicit and never inherited from Harbor's public default.
-- The verifier is a separate environment and receives only declared artifacts.
+- The verifier is a separate environment, contains its private checker, and receives only declared artifacts and evidence.
 - The container is discarded or reset between baseline and treatment.
 
 ### Treatment
 
 - The baseline has no target skill content.
-- The treatment has exactly the target skill content at a recorded digest or commit.
-- Eval definitions, expected outcomes, assertions, grader source, and harness controls are absent from both agent environments.
+- The treatment has exactly the target skill content with both a recorded content digest and resolved source commit.
+- Eval definitions, expected outcomes, assertions, grader source, and harness controls are absent from both agent environments, while private grading material is present only in the verifier environment.
 - A suppression canary proves that an untrusted or unintended global skill/instruction is not silently influencing the trial, where the Harbor agent integration exposes such state.
 - A failed treatment-boundary check invalidates the pair before outcome interpretation.
 
@@ -191,7 +195,7 @@ Only `qualified` supports the full D7Y invocation contract. No qualification out
 
 Treat the current Claude wrapper branch as a frozen historical attempt. Do not repair or extend its host-side isolation model in this plan.
 
-Record the Harbor version, Python version, Docker version, selected image digest, selected agent integration, and provider configuration used by qualification. Keep secrets out of plans, task files, and artifacts.
+Record the pinned Harbor version and installation command, Python version, Docker client and daemon versions, selected image digests, selected agent integration, provider configuration, network policies, resource limits, Claude authentication mechanism and imported key names, and the exact runtime payload. Keep secrets out of plans, task files, and artifacts. The current environment has Docker client `29.6.2` but no permitted Docker daemon access; this is a preflight blocker until daemon access is granted or another explicitly qualified provider is selected.
 
 **Exit evidence:** a committed implementation prompt can point at this plan, the main branch is the source base, and the chosen Harbor/Docker posture is reproducible by a developer.
 
@@ -255,7 +259,7 @@ The agent environment receives only:
 - the D7Y capability needed by the case;
 - the treatment skill in the treatment arm.
 
-The verifier receives only the declared initiative output and required trace or command artifacts. It independently runs the checker and reports outcome evidence separately from process evidence.
+The verifier image contains the private initiative checker and expected outcome rules. It receives only the declared initiative output and required trace or command artifacts, then independently runs the checker and reports outcome evidence separately from process evidence.
 
 **Exit evidence:** one inspectable baseline/treatment pair, with source checkout unchanged and every non-success classified.
 
@@ -281,7 +285,7 @@ Checks are harness-owned and inspect artifacts without repairing them. Each resu
 
 **Exit evidence:** summaries can be regenerated from retained artifacts and cannot call a run passing when required evidence is missing.
 
-### Phase 7 — Expand coverage conservatively
+### Phase 7 — Follow-on roadmap: expand coverage conservatively
 
 After the foundation is reliable, add the second current suite and then small structurally equivalent variants. Vary inputs and irrelevant context rather than merely duplicating prompts. Report raw per-case results and aggregate counts; do not manufacture statistical precision from a tiny suite.
 
@@ -289,7 +293,7 @@ At this phase, begin recording efficiency observations—duration, available tok
 
 **Exit evidence:** the suite demonstrates reuse across multiple cases and exposes false triggers, skipped steps, and common failure modes.
 
-### Phase 8 — Add regression, safety, and longitudinal evidence
+### Phase 8 — Follow-on roadmap: add regression, safety, and longitudinal evidence
 
 Only when skill revisions are being made from eval feedback, add:
 
@@ -301,7 +305,7 @@ Only when skill revisions are being made from eval feedback, add:
 
 Safety failures remain separate hard gates. A skill must not gain utility credit by weakening permission, data-protection, or instruction-boundary behavior.
 
-This phase is where the paper's recommendations about multi-run trajectory comparison, held-out evaluation, cost/latency, safety, and evolution tracking become operational. It is intentionally not part of the initial Harbor foundation.
+This phase is where the paper's recommendations about multi-run trajectory comparison, held-out evaluation, cost/latency, safety, and evolution tracking become operational. It is intentionally outside this plan's completion boundary. Before adding `safety` assertions, migrate `evals/skill-evals.schema.json` and its validator to accept the canonical safety dimension; the current schema supports only invocation, process, outcome, quality, and efficiency.
 
 ## Artifact and result contract
 
@@ -346,17 +350,17 @@ The exact Harbor output layout may differ. D7Y should normalize only the canonic
 
 ## Failure taxonomy and stop conditions
 
-- **Harbor unavailable or version incompatible:** stop; do not silently fall back to the old wrapper.
-- **Container boundary cannot be demonstrated:** stop the isolation phase and record the provider limitation.
-- **Network policy is implicit or public:** fail qualification until explicitly configured.
-- **Host checkout or credentials are mounted:** fail the task before agent execution.
-- **Shared verifier is used accidentally:** fail the pair; do not interpret its result.
+- **Harbor unavailable or version incompatible:** stop with `environment_error`; do not silently fall back to the old wrapper.
+- **Container boundary cannot be demonstrated:** stop with `environment_error` and record the provider limitation.
+- **Network policy is implicit or public:** stop with `environment_error` until explicitly configured.
+- **Host checkout or credentials are mounted:** stop with `environment_error` before agent execution.
+- **Shared verifier is used accidentally:** stop with `pair_error`; do not interpret its result.
 - **Skill treatment leaks into baseline:** fail pair validity.
-- **Required artifact is absent:** report evidence error or ungradable; never success.
-- **Claude invocation is not observable:** mark invocation unavailable and do not claim invocation success.
-- **Harbor agent integration changes its trace contract:** preserve raw evidence, update the bounded adapter only after a new capability check, and invalidate unsupported parser assumptions.
-- **Agent timeout or crash:** retain partial logs and classify as agent infrastructure failure, not skill failure.
-- **Verifier failure:** distinguish verifier/environment failure from an agent-produced invalid outcome.
+- **Required artifact is absent:** report `evidence_error` or `ungradable`, never success.
+- **Claude invocation is not observable:** report `ungradable` for invocation and do not claim invocation success.
+- **Harbor agent integration changes its trace contract:** preserve raw evidence, report `evidence_error`, and update the bounded adapter only after a new capability check.
+- **Agent timeout or crash:** retain partial logs and report `agent_error`.
+- **Verifier failure:** report `verifier_error` and distinguish it from an agent-produced invalid outcome.
 - **Stochastic variation:** report observations; do not promote maturity from one pair.
 - **Scope growth:** add no abstraction, provider, grader, or orchestration layer without a demonstrated current failure requiring it.
 
@@ -366,7 +370,7 @@ Documentation and plan work must verify paths, terminology, Harbor links, and co
 
 The implementation must, in progressive order, verify:
 
-1. Harbor task parsing and local Docker startup.
+1. Harbor task parsing, pinned installation, and local Docker startup.
 2. Positive and negative isolation probes.
 3. Separate verifier and required artifact behavior.
 4. Baseline/treatment skill provenance and leakage controls.
@@ -397,6 +401,6 @@ Static task validation is not behavioral evidence. A successful Harbor startup i
 
 ## Completion boundary
 
-This plan is complete only when the Harbor foundation and one paired D7Y case are inspectable and their limitations are explicit. It is not complete merely because Harbor is installed, a task validates, or Claude Code returns a response.
+This plan is complete at the end of Phases 0–6: the Harbor foundation, paired treatment qualification, Claude integration qualification, one positive D7Y case, one negative control, and evidence-informed deterministic checks are inspectable and their limitations are explicit. Phases 7–8 are follow-on roadmap work outside this plan's completion boundary.
 
 The plan must not declare a skill `evaluated`, update an accepted `benchmark.json`, or recommend maturity until the canonical skill-evaluation contract has sufficient comparative evidence and the appropriate human review.
