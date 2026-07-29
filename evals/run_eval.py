@@ -214,37 +214,70 @@ def redact_text(text: str, tokens: list[str]) -> str:
     return out
 
 
-def redact_obj(obj: Any, tokens: list[str]) -> Any:
-    """Recursively redact tokens from strings in JSON keys and values.
+def _scalar_sentinel_if_colliding(obj: Any, token_set: set[str]) -> Any:
+    """Return ``REDACTED`` if a non-string scalar directly collides with an
+    imported token, else the scalar unchanged.
 
-    Non-string scalars (numbers, booleans, null) and the array/object structure
-    are preserved untouched, so a redacted JSON value is still valid JSON of the
-    same shape. This is what makes structural JSONL redaction safe.
+    Scalar-collision policy (binding contract precedence): complete redaction of
+    every imported environment value is mandatory and outranks type/value
+    preservation. A number, boolean, or null whose JSON serialization exactly
+    equals an imported token is a direct collision — e.g. number ``30000`` vs
+    token ``"30000"``, number ``1`` vs token ``"1"``, boolean ``true`` vs token
+    ``"true"``, null vs token ``"null"`` — and is replaced with the redaction
+    sentinel without preserving its original value or type. Only EXACT equality
+    between the scalar's serialized form and a token is a collision, so a
+    non-colliding number such as ``42`` (or ``12345`` next to token ``"1"``)
+    keeps its value and type. The result is always valid JSON because the
+    sentinel is a string.
     """
+    # ``obj`` here is None/bool/int/float (str/list/dict handled by the caller).
+    if json.dumps(obj) in token_set:
+        return REDACTED
+    return obj
+
+
+def redact_obj(obj: Any, tokens: list[str]) -> Any:
+    """Recursively redact imported tokens from a JSON value.
+
+    Strings (keys and values) are substring-redacted. Non-string scalars
+    (numbers, booleans, null) keep their value and type UNLESS their JSON
+    serialization directly equals an imported token, in which case complete
+    redaction outranks type preservation and the scalar becomes the redaction
+    sentinel (see ``_scalar_sentinel_if_colliding``). Arrays and objects recurse
+    and their shape is preserved, so the result is always valid JSON.
+    """
+    token_set = set(tokens)
+    return _redact_obj(obj, tokens, token_set)
+
+
+def _redact_obj(obj: Any, tokens: list[str], token_set: set[str]) -> Any:
     if isinstance(obj, str):
         return redact_text(obj, tokens)
     if isinstance(obj, list):
-        return [redact_obj(item, tokens) for item in obj]
+        return [_redact_obj(item, tokens, token_set) for item in obj]
     if isinstance(obj, dict):
-        return {redact_text(str(key), tokens): redact_obj(value, tokens) for key, value in obj.items()}
-    return obj
+        return {redact_text(str(key), tokens): _redact_obj(value, tokens, token_set)
+                for key, value in obj.items()}
+    return _scalar_sentinel_if_colliding(obj, token_set)
 
 
 def redact_jsonl(text: str, tokens: list[str]) -> str:
     """Redact stream-json/JSONL structurally so every retained line stays valid JSON.
 
-    Raw substring redaction corrupts retained traces: an imported value that
-    matches a numeric field (e.g. an ``estimated_tokens`` count) turns the
-    number into a bare ``<redacted>`` token and the whole line becomes invalid
-    JSON. To prevent that, each complete JSON event line is parsed and redacted
-    recursively over string keys and string values only — numbers, booleans,
-    nulls, arrays, and object structure are preserved — then re-serialized as
-    valid single-line JSON. Lines that are empty, blank, or not parseable JSON
-    (malformed/non-JSON raw output) are redacted safely as raw text. Per-line
-    separation is preserved.
+    Each complete JSON event line is parsed and redacted via ``_redact_obj``:
+    string keys/values are substring-redacted, and a number/boolean/null whose
+    JSON serialization directly equals an imported token becomes the redaction
+    sentinel (complete redaction outranks type preservation on a direct scalar
+    collision); non-colliding scalars and array/object structure are preserved.
+    The redacted event is re-serialized as valid single-line JSON, so retained
+    traces never suffer the old raw-substring corruption (a numeric token
+    turning a number into a bare ``<redacted>``). Lines that are empty, blank, or
+    not parseable JSON (malformed/non-JSON raw output) are redacted safely as
+    raw text. Per-line separation is preserved.
     """
     if not isinstance(text, str):
         return text
+    token_set = set(tokens)
     out_lines: list[str] = []
     for line in text.splitlines():
         if not line.strip():
@@ -255,7 +288,7 @@ def redact_jsonl(text: str, tokens: list[str]) -> str:
         except (json.JSONDecodeError, ValueError):
             out_lines.append(redact_text(line, tokens))
             continue
-        out_lines.append(json.dumps(redact_obj(event, tokens), ensure_ascii=False))
+        out_lines.append(json.dumps(_redact_obj(event, tokens, token_set), ensure_ascii=False))
     result = "\n".join(out_lines)
     if text.endswith("\n"):
         result += "\n"
@@ -285,31 +318,31 @@ def validate_redaction_tokens(tokens: list[str]) -> None:
     """Defensive invariant for imported redaction values, before any write.
 
     Every imported environment value is added to the redaction set and scrubbed
-    from all retained string content; none is silently omitted. This guard does
-    NOT reject values for length, digit-only content, or being a JSON literal:
-    structural redaction is what makes arbitrary values safe.
+    from all retained output; none is silently omitted. This guard does NOT
+    reject values for length, digit-only content, or being a JSON literal:
+    structural redaction handles all of them. Short model ids (``glm-4.7``),
+    all-digit timeouts, JSON literals (``true``/``false``/``null``), and the
+    flag ``"1"`` are all accepted and fully redacted — from string keys/values
+    by substring replacement, and from a directly-colliding number/boolean/null
+    by replacing the scalar with the redaction sentinel (complete redaction
+    outranks type preservation; see ``_scalar_sentinel_if_colliding``).
 
-    ``redact_obj`` preserves non-string scalars and only substring-replaces
-    inside JSON string keys/values, and ``redact_jsonl`` parses each event line
-    and re-serializes it. A redaction token therefore never corrupts JSON
-    structure: numbers, booleans, nulls, arrays, and object shape survive. That
-    is precisely why the original numeric-corruption bug (a numeric token turning
-    a number into a bare ``<redacted>``) is fixed by structural redaction rather
-    than by rejecting numeric tokens. The real qualification environment imports
-    short model ids (length 7), all-digit timeouts, and the flag ``"1"``; those
-    are fully redacted from every string position and must be permitted.
-
-    The only values rejected here are non-string or empty tokens, which cannot
-    arrive via ``collect_env_tokens`` (it yields only non-empty strings) but are
-    defended against so the redaction set is always well-formed. Accepted
-    residual, by design: a value that also appears as a JSON number/boolean/null
-    field is preserved there so typed fields stay typed.
+    The only values rejected here are non-string/empty tokens, and a token equal
+    to the redaction sentinel itself. Neither can arrive via
+    ``collect_env_tokens`` for real settings, but both are defended against: a
+    token equal to the sentinel would make redaction output indistinguishable
+    from a real value and is refused rather than silently weakening redaction.
     """
     for token in tokens:
         if not isinstance(token, str) or not token:
             raise PreflightError(
                 "an imported environment redaction value is not a non-empty "
                 "string; refusing to run"
+            )
+        if token == REDACTED:
+            raise PreflightError(
+                "an imported environment redaction value equals the redaction "
+                "sentinel; refusing to run"
             )
 
 
@@ -2013,6 +2046,22 @@ def write_jsonl(path: Path, content: str, tokens: list[str]) -> None:
     path.write_text(redact_jsonl(content, tokens), encoding="utf-8")
 
 
+def _redact_retained_settings(path: Path, tokens: list[str]) -> None:
+    """Redact the retained harness-settings copy in place, after execution.
+
+    The file is the real runtime ``--settings`` input (kept verbatim while the
+    arms execute) and also a retained JSON artifact. Redact it structurally so
+    imported values — including a boolean collision with an imported
+    ``"true"``/``"false"`` token — do not survive in the retained copy. Best
+    effort: a missing or unparseable file is left untouched rather than dropped.
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    path.write_text(json.dumps(redact_obj(data, tokens), indent=2), encoding="utf-8")
+
+
 def finalize_arm(
     arm_dir: Path,
     arm: ArmResult,
@@ -2462,11 +2511,29 @@ def finalize_run(ctx: RunContext) -> None:
     executable = ctx.executable
     executable_version = ctx.executable_version
 
-    # Sanitize retained runtime workspaces before writing any evidence that
-    # could otherwise carry an unsanitized agent-authored value.
-    for arm in (ctx.with_skill, ctx.baseline):
-        if arm is not None and arm.workspace.exists():
-            sanitize_workspace(arm.workspace, tokens)
+    # Sanitize every retained runtime root before writing evidence. Workspaces
+    # may carry agent-authored values; the capability, plugin, config, and temp
+    # roots are deterministic runtime installations (committed scripts, the skill
+    # payload, suppression canaries) that are NOT stdout/stderr or JSON artifacts
+    # and so are not redacted at write time. They are retained under the output
+    # tree, and a low-entropy imported value (e.g. ``"1"``) can appear in them
+    # coincidentally, so they are scrubbed here — after execution has finished
+    # using them — so that no imported value remains anywhere in the output tree.
+    for key in ("with_skill_workspace", "baseline_workspace",
+                "capability", "with_skill_plugin", "baseline_plugin",
+                "with_skill_config", "baseline_config",
+                "with_skill_temp", "baseline_temp"):
+        root = preflight.roots.get(key)
+        if root is not None and root.exists():
+            sanitize_workspace(root, tokens)
+
+    # Redact the retained harness-settings copy. It is the real runtime
+    # ``--settings`` file (needed verbatim during execution, with booleans like
+    # ``disableBundledSkills: true``), so it cannot be redacted at write time;
+    # execution is now complete, so redact the retained artifact in place. Its
+    # booleans collide with imported ``"true"``/``"false"`` tokens and must be
+    # replaced by the sentinel under the scalar-collision policy.
+    _redact_retained_settings(preflight.settings_path, tokens)
 
     # Per-arm finalization (same inventory for every outcome).
     if ctx.with_skill is not None:
@@ -2519,7 +2586,11 @@ def finalize_run(ctx: RunContext) -> None:
             "after_hash": _status_hash(ctx.source_status_after or ""),
             "mutated": (ctx.source_status_after or "") != preflight.source_status_before,
         },
-        [],
+        # Redact with the real token set, like every other JSON artifact: the
+        # hash strings are JSON strings and must not retain an imported value
+        # (e.g. a hex hash containing the digit "1"). The ``mutated`` boolean is
+        # computed from the raw statuses and is unaffected by redaction.
+        tokens,
     )
     if ctx.checks is not None:
         write_json(preflight.output_dir / "checks.json", ctx.checks, tokens)

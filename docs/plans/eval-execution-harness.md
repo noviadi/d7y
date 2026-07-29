@@ -264,6 +264,57 @@ Focused acceptance cases must include suppression canaries for user or project i
 
 ### Execution posture
 
+Ninth incremental correction (scalar-collision redaction policy), on branch
+`work/eval-execution-harness`, base `becd809`. A retained-review finding showed
+that the eighth correction's leak scan exempted the imported value `1`, and that
+`redact_obj` preserved *every* non-string scalar unconditionally — so a number,
+boolean, or null whose value directly equals an imported token (e.g. number `1`
+vs token `"1"`, boolean `true` vs token `"true"`, null vs token `"null"`, number
+`30000` vs token `"30000"`) survived unredacted. Under the binding contract,
+complete redaction of every imported value is mandatory and outranks type/value
+preservation on a direct scalar collision.
+
+Explicit scalar-collision policy implemented (precedence: complete redaction >
+JSON validity > type/value preservation for non-colliding fields):
+
+- Strings (keys and values) are substring-redacted as before.
+- A number/boolean/null whose JSON serialization **exactly equals** an imported
+  token is a direct collision and is replaced with the redaction sentinel
+  (`<redacted>`); its original value/type is NOT preserved. Only exact equality
+  counts, so a non-colliding number such as `42`, or `12345` next to token `"1"`,
+  keeps its value and type.
+- Arrays and objects recurse; object shape is preserved; results are always valid
+  JSON. Machine-readable artifacts (source-status, checks, summaries, manifests)
+  remain parseable JSON (a colliding boolean becomes the string sentinel).
+
+Mechanical redaction-integration adjustments required by absolute complete
+redaction over the full output tree (source-mutation policy unchanged — the
+`mutated` boolean is still computed from raw statuses):
+
+- `source-status.json` was written with an empty token list; its sha256 hash
+  strings are JSON strings and could contain a low-entropy token (e.g. `"1"`), so
+  it is now redacted with the real token set.
+- `harness-settings.json` is the runtime `--settings` file (needs verbatim
+  booleans during execution) and a retained artifact; it is redacted in place in
+  `finalize_run` after execution completes.
+- The retained runtime installations (capability, both plugins, both configs,
+  both temps) are deterministic committed content, not stdout/stderr or JSON
+  artifacts, so they were not redacted at write time; a low-entropy token can
+  appear in them coincidentally (e.g. `1` in the `d7y` shell script). They are
+  now scrubbed in `finalize_run` (after execution has finished using them) so no
+  imported value remains anywhere in the output tree.
+- `validate_redaction_tokens` keeps its permissive gate (short/numeric/literal
+  values accepted) and adds a defensive rejection of a token equal to the
+  redaction sentinel, so a marker/sentinel can never equal an imported token.
+
+The leak scan is now value-aware and has **no exemptions**: every output-tree
+path component, surviving symlink target, captured stdout/stderr, and every file
+is checked. JSON/JSONL files are parsed (proving parseability) and checked
+structurally — no string key/value contains a token and no number/boolean/null
+scalar equals a token — which avoids false positives from non-colliding numbers
+that merely contain a digit. Raw (non-JSON) files are substring-scanned. The
+value `1`, numeric, boolean, and null tokens are all checked, not exempted.
+
 Eighth incremental correction (preflight redaction gate over-rejection), on
 branch `work/eval-execution-harness`, base `935a869`. The seventh correction's
 preflight redaction gate rejected every token shorter than 8 characters and

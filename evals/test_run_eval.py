@@ -431,17 +431,20 @@ def make_jsonl_redaction_fake(tmp: Path) -> Path:
     return _write_fake(tmp, "jsonl-redaction", behavior)[0]
 
 
-def make_multivalue_redaction_fake(tmp: Path) -> Path:
-    """Emit real-shaped imported values across all redaction channels.
+def make_scalar_collision_fake(tmp: Path) -> Path:
+    """Emit six imported values across every redaction channel, incl. collisions.
 
-    Reads three representative runtime-setting values from the environment:
-    a short model id (``D7Y_EVAL_MODEL``, e.g. ``glm-4.7``), an all-digit
-    timeout (``D7Y_EVAL_TIMEOUT``, e.g. ``30000``), and a one-digit flag
-    (``D7Y_EVAL_FLAG``, e.g. ``1``). Each is emitted into JSONL string values,
-    raw stdout text, raw stderr, the final response, a retained filename, and a
-    symlink target, alongside numeric/boolean/null/array fields that must keep
-    their types. Proves preflight permits these values and structural redaction
-    scrubs them without corrupting retained JSON.
+    Reads representative imported values from the environment: a short model id
+    (``D7Y_EVAL_MODEL`` = ``glm-4.7``), an all-digit number (``D7Y_EVAL_NUM`` =
+    ``30000``), a one-digit value (``D7Y_EVAL_ONE`` = ``1``), and the JSON
+    literals ``true``/``false``/``null``. Each is emitted into raw stdout, raw
+    stderr, JSON string values, JSON keys, JSON numeric values (30000 and 1 as
+    numbers), JSON booleans (true/false), JSON null, nested metadata, the final
+    response, a retained filename, a symlink target, and workspace file contents
+    — alongside non-colliding numeric/array/object fields. Proves preflight
+    accepts these values and that complete redaction (including direct scalar
+    collisions) leaves no imported value anywhere while retained JSON stays
+    parseable.
     """
     behavior = (
         "import glob as _glob\n"
@@ -451,33 +454,48 @@ def make_multivalue_redaction_fake(tmp: Path) -> Path:
         "_target = ('d7y-eval-session:' + _skill_name) if _has_skill else None\n"
         "_skills = [_target, 'doctor'] if _has_skill else ['doctor']\n"
         "_pname = 'd7y-eval-session' if _has_skill else 'd7y-eval-control'\n"
-        "_sid = 'mv-' + str(os.getpid())\n"
+        "_sid = 'sc-' + str(os.getpid())\n"
         "_model = os.environ.get('D7Y_EVAL_MODEL', '')\n"
-        "_timeout = os.environ.get('D7Y_EVAL_TIMEOUT', '')\n"
-        "_flag = os.environ.get('D7Y_EVAL_FLAG', '')\n"
+        "_num = os.environ.get('D7Y_EVAL_NUM', '')\n"
+        "_one = os.environ.get('D7Y_EVAL_ONE', '')\n"
+        "_t = os.environ.get('D7Y_EVAL_T', '')\n"
+        "_f = os.environ.get('D7Y_EVAL_F', '')\n"
+        "_n = os.environ.get('D7Y_EVAL_N', '')\n"
+        # init event: string echoes, token-named keys, colliding numeric/bool/
+        # null scalars, plus non-colliding typed fields and nested metadata.
         "print(json.dumps({'type': 'system', 'subtype': 'init', 'session_id': _sid, "
         "'tools': ['Skill', 'Read', 'Write', 'Edit', 'Bash'], 'model': 'claude-sonnet-5', "
         "'skills': _skills, 'plugins': [{'name': _pname, 'path': _plugin or '', 'version': '0.0.1'}], "
         "'mcp_servers': [], 'permissionMode': 'dontAsk', "
-        "'model_echo': 'routed ' + _model, 'timeout_echo': 'timeout=' + _timeout, "
-        "'flag_echo': 'flag=' + _flag, "
-        "'meta': {'count': 42, 'flag': True, 'zero': None, 'arr': [2, 3, 4]}}))\n"
+        "'str_echo': 'm=' + _model + ' n=' + _num + ' o=' + _one + ' ' + _t + ' ' + _f + ' ' + _n, "
+        "'keys': {_model: 1, _num: 2, _one: 3, 'true': 4, 'false': 5, 'null': 6}, "
+        "'num_hit': 30000, 'num_one': 1, "
+        "'flag_on': True, 'flag_off': False, 'blank': None, "
+        "'meta': {'deep': 'x-' + _model + '-' + _num, 'count': 42, 'items': [2, 3, 4], "
+        "'ratio': 1.5, 'inner': {'on': True, 'gap': None}}}))\n"
+        # assistant event: value echoed in raw stdout text; routed model is _model.
         "print(json.dumps({'type': 'assistant', 'message': {'role': 'assistant', 'model': _model,\n"
-        "    'content': [{'type': 'text', 'text': 'use ' + _model + ' with ' + _timeout + ' and ' + _flag}]}}))\n"
-        "sys.stderr.write('stderr ' + _model + ' ' + _timeout + ' ' + _flag + '\\n')\n"
+        "    'content': [{'type': 'text', 'text': 'use ' + _model + ' ' + _num + ' ' + _one + "
+        "'' + _t + ' ' + _f + ' ' + _n}]}}))\n"
+        # raw stderr carries every value.
+        "sys.stderr.write('stderr ' + _model + ' ' + _num + ' ' + _one + ' ' + _t + ' ' + _f + ' ' + _n + '\\n')\n"
+        # workspace contents: a value-named file, value-bearing content, and a
+        # value-targeted symlink.
         "if _root and _has_skill:\n"
-        "    open(os.path.join(_root, _model + '.md'), 'w').write('content ' + _timeout)\n"
+        "    open(os.path.join(_root, _model + '.md'), 'w').write('content ' + _num + ' ' + _one)\n"
+        "    open(os.path.join(_root, 'note.txt'), 'w').write('see ' + _t + ' ' + _f + ' ' + _n)\n"
         "    try:\n"
-        "        os.symlink('/tmp/' + _flag + '-target', os.path.join(_root, _timeout + '.link'))\n"
+        "        os.symlink('/tmp/' + _one + '-' + _n + '-target', os.path.join(_root, _num + '.link'))\n"
         "    except OSError:\n"
         "        pass\n"
+        # result event: final response carries every value.
         "print(json.dumps({'type': 'result', 'subtype': 'success', "
-        "'result': 'final ' + _model + ' ' + _timeout + ' ' + _flag,\n"
-        "    'is_error': False, 'num_turns': 3, 'permission_denials': [],\n"
+        "'result': 'final ' + _model + ' ' + _num + ' ' + _one + ' ' + _t + ' ' + _f + ' ' + _n,\n"
+        "    'is_error': False, 'num_turns': 7, 'permission_denials': [],\n"
         "    'modelUsage': {'claude-sonnet-5': {'provider': 'firstParty', 'canonicalModel': 'claude-sonnet-5'}}}))\n"
         "sys.exit(0)\n"
     )
-    return _write_fake(tmp, "multivalue", behavior)[0]
+    return _write_fake(tmp, "scalar-collision", behavior)[0]
 
 
 def make_canary_leak_fake(tmp: Path, channel: str) -> Path:
@@ -1045,6 +1063,38 @@ class TestRedactionUnit(unittest.TestCase):
         self.assertEqual(json.loads(lines[0])["n"], 7)
         self.assertIs(json.loads(lines[2])["b"], False)
 
+    def test_redact_obj_scalar_collision_policy(self):
+        # Complete redaction outranks type preservation on a DIRECT collision:
+        # a number/boolean/null whose JSON form equals an imported token becomes
+        # the sentinel. Non-colliding scalars keep value and type.
+        tokens = ["30000", "1", "true", "false", "null", "glm-4.7"]
+        out = run_eval.redact_obj({
+            "n_hit": 30000,            # collides with "30000" -> sentinel
+            "n_one": 1,                # collides with "1" -> sentinel
+            "n_keep": 42,              # non-colliding -> preserved
+            "n_sub": 13000,            # contains "1" but != "1" -> preserved
+            "flag_on": True,           # collides with "true" -> sentinel
+            "flag_off": False,         # collides with "false" -> sentinel
+            "blank": None,             # collides with "null" -> sentinel
+            "s_val": "model glm-4.7 n=30000",   # string substring-redacted
+            "arr": [1, 2, 30000],      # element 1 and 30000 collide -> sentinel
+        }, tokens)
+        self.assertEqual(out["n_hit"], run_eval.REDACTED)
+        self.assertEqual(out["n_one"], run_eval.REDACTED)
+        self.assertEqual(out["n_keep"], 42)
+        self.assertEqual(out["n_sub"], 13000)
+        self.assertEqual(out["flag_on"], run_eval.REDACTED)
+        self.assertEqual(out["flag_off"], run_eval.REDACTED)
+        self.assertEqual(out["blank"], run_eval.REDACTED)
+        self.assertEqual(out["s_val"], "model <redacted> n=<redacted>")
+        self.assertEqual(out["arr"], [run_eval.REDACTED, 2, run_eval.REDACTED])
+        # Structural no-leak check (avoids false positives from non-colliding
+        # numbers like 13000 that merely contain the digit "1").
+        for kind, value in _walk_json_scalars(out):
+            for t in tokens:
+                self.assertFalse(_scalar_carries_token(kind, value, t),
+                                 f"{kind}={value!r} carries {t!r}")
+
 
 class TestRedactionPreflight(unittest.TestCase):
     """Real-shaped imported values are permitted; structural redaction keeps JSON safe."""
@@ -1353,6 +1403,107 @@ def _assert_complete_inventory(test: unittest.TestCase, output: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Complete, no-exemption leak scanning.
+# ---------------------------------------------------------------------------
+
+
+def _walk_json_scalars(obj):
+    """Yield ``(kind, value)`` for every string key/value and non-string scalar.
+
+    ``kind`` is ``"str"`` for strings (including object keys), ``"num"`` for
+    numbers, ``"bool"`` for booleans, ``"null"`` for null. Used by the structural
+    leak scan so a non-colliding number that merely contains a digit (e.g. pid
+    12345 next to token ``"1"``) is not mistaken for the imported value.
+    """
+    if isinstance(obj, bool):  # bool before int (bool subclasses int)
+        yield ("bool", obj)
+    elif isinstance(obj, (int, float)):
+        yield ("num", obj)
+    elif obj is None:
+        yield ("null", obj)
+    elif isinstance(obj, str):
+        yield ("str", obj)
+    elif isinstance(obj, dict):
+        for key, value in obj.items():
+            if isinstance(key, str):
+                yield ("str", key)
+            yield from _walk_json_scalars(value)
+    elif isinstance(obj, list):
+        for item in obj:
+            yield from _walk_json_scalars(item)
+
+
+def _scalar_carries_token(kind: str, value, token: str) -> bool:
+    if kind == "str":
+        return token in value
+    if kind == "bool":
+        return token == ("true" if value else "false")
+    if kind == "null":
+        return token == "null"
+    if kind == "num":
+        return token == json.dumps(value)
+    return False
+
+
+def _iter_json_records(path: Path, text: str):
+    if path.suffix == ".jsonl":
+        for line in text.splitlines():
+            if line.strip():
+                yield json.loads(line)  # proves each retained JSONL line parses
+    else:
+        yield json.loads(text)  # proves the retained JSON artifact parses
+
+
+def assert_no_imported_value_anywhere(test: unittest.TestCase, root: Path,
+                                       stdout: str, stderr: str,
+                                       tokens: list[str]) -> None:
+    """Scan the complete output tree and captured stdout/stderr with no exclusions.
+
+    Path components, surviving symlink targets, captured stdout/stderr, and every
+    file's content are checked. JSON/JSONL files are parsed and checked
+    structurally (no string key/value contains a token; no number/boolean/null
+    scalar equals a token), which both proves parseability and avoids false
+    positives from non-colliding numbers. Raw (non-JSON) files are
+    substring-scanned. No token is exempted — including ``"1"``, numeric,
+    boolean, or null tokens.
+    """
+    for p in root.rglob("*"):
+        # Scan path components RELATIVE to the output root; the absolute path
+        # includes the disposable temp-dir name, which may contain digits.
+        try:
+            rel = str(p.relative_to(root))
+        except ValueError:
+            rel = p.name
+        for t in tokens:
+            test.assertNotIn(t, rel, f"path component carries {t!r}: {rel}")
+        if p.is_symlink():
+            target = os.readlink(p)
+            for t in tokens:
+                test.assertNotIn(t, target, f"symlink target carries {t!r}: {rel}")
+    for t in tokens:
+        test.assertNotIn(t, stdout, f"captured stdout carries {t!r}")
+        test.assertNotIn(t, stderr, f"captured stderr carries {t!r}")
+    for p in root.rglob("*"):
+        if not p.is_file():
+            continue
+        try:
+            text = p.read_text(errors="ignore")
+        except OSError:
+            continue
+        if p.suffix in (".json", ".jsonl"):
+            for rec in _iter_json_records(p, text):
+                for kind, value in _walk_json_scalars(rec):
+                    for t in tokens:
+                        test.assertFalse(
+                            _scalar_carries_token(kind, value, t),
+                            f"{p} {kind}={value!r} carries imported value {t!r}",
+                        )
+        else:
+            for t in tokens:
+                test.assertNotIn(t, text, f"raw file {p} carries {t!r}")
+
+
+# ---------------------------------------------------------------------------
 # Public-CLI end-to-end tests.
 # ---------------------------------------------------------------------------
 
@@ -1650,68 +1801,63 @@ class TestPublicCLI(unittest.TestCase):
                     self.assertEqual(ev["<redacted>_key"], "k")
                     self.assertEqual(meta["deep"], "x-<redacted>-y")
 
-    # -- correction: real-shaped imported values permitted, fully redacted -----
+    # -- correction: complete redaction incl. direct scalar collisions --------
 
-    def test_real_shaped_imported_values_permitted_and_fully_redacted(self):
-        fake = make_multivalue_redaction_fake(self.tmp)
-        settings = make_user_settings(self.tmp, env={
-            "D7Y_EVAL_MODEL": "glm-4.7",      # short model id
-            "D7Y_EVAL_TIMEOUT": "30000",      # all-digit timeout
-            "D7Y_EVAL_FLAG": "1",             # one-digit flag
-        })
+    def test_imported_values_fully_redacted_with_scalar_collisions(self):
+        fake = make_scalar_collision_fake(self.tmp)
+        tokens = {
+            "D7Y_EVAL_MODEL": "glm-4.7",
+            "D7Y_EVAL_NUM": "30000",
+            "D7Y_EVAL_ONE": "1",
+            "D7Y_EVAL_T": "true",
+            "D7Y_EVAL_F": "false",
+            "D7Y_EVAL_N": "null",
+        }
+        settings = make_user_settings(self.tmp, env=tokens)
         output = self.tmp / "out"
         proc = run_cli(self.repo, "skills/starting-initiatives/evals/evals.json",
                        "start-new-initiative", output, claude=fake, user_settings=settings)
         # Preflight does not reject valid runtime settings (exit 2 == preflight).
         self.assertNotEqual(proc.returncode, 2, proc.stderr)
         self.assertTrue(output.exists())
-        # Captured CLI stdout/stderr never carry the specific values.
-        self.assertNotIn("glm-4.7", proc.stdout + proc.stderr)
-        self.assertNotIn("30000", proc.stdout + proc.stderr)
-        # The specific values are scrubbed from the whole retained output tree:
-        # contents, every path component, and symlink targets. (The bare flag "1"
-        # is checked at its emitted string positions below, since a single digit
-        # also occurs legitimately in numeric and hex fields by design.)
-        leaked = []
-        for p in output.rglob("*"):
-            rel = str(p)
-            if "glm-4.7" in rel or "30000" in rel:
-                leaked.append(("path", rel))
-            if p.is_symlink() and ("glm-4.7" in os.readlink(p) or "30000" in os.readlink(p)):
-                leaked.append(("symlink-target", rel))
-            if p.is_file():
-                try:
-                    txt = p.read_text(errors="ignore")
-                except OSError:
-                    continue
-                if "glm-4.7" in txt or "30000" in txt:
-                    leaked.append(("content", rel))
-        self.assertEqual(leaked, [], f"value leaked in: {leaked}")
-        # Every retained JSONL line parses; typed fields stay typed; every
-        # emitted value (including the flag "1") is gone from its string position.
-        for arm in ("with-skill", "baseline"):
-            text = (output / arm / "artifacts" / "trace.jsonl").read_text()
-            init = None
-            assistant_text = None
-            for line in text.splitlines():
-                if not line.strip():
-                    continue
-                ev = json.loads(line)  # must parse
-                if ev.get("type") == "system" and ev.get("subtype") == "init":
-                    init = ev
-                elif ev.get("type") == "assistant":
-                    assistant_text = ev["message"]["content"][0]["text"]
-            self.assertIsNotNone(init, f"{arm}: init event missing")
-            self.assertEqual(init["model_echo"], "routed <redacted>")
-            self.assertEqual(init["timeout_echo"], "timeout=<redacted>")
-            self.assertEqual(init["flag_echo"], "flag=<redacted>")  # flag "1" scrubbed
-            # Numeric, boolean, null, and array fields keep exact types/values.
-            self.assertEqual(init["meta"]["count"], 42)
-            self.assertIs(init["meta"]["flag"], True)
-            self.assertIsNone(init["meta"]["zero"])
-            self.assertEqual(init["meta"]["arr"], [2, 3, 4])
-            self.assertEqual(assistant_text,
-                             "use <redacted> with <redacted> and <redacted>")
+        token_list = list(tokens.values())
+        # Complete, no-exemption leak scan: no imported value remains anywhere —
+        # including "1", numeric, boolean, and null tokens. This also parses
+        # every retained JSON artifact and JSONL line.
+        assert_no_imported_value_anywhere(self, output, proc.stdout, proc.stderr, token_list)
+
+        # Independently re-parse the with-skill trace and prove the policy:
+        # colliding scalars became the sentinel; non-colliding fields unchanged.
+        text = (output / "with-skill" / "artifacts" / "trace.jsonl").read_text()
+        init = None
+        for line in text.splitlines():
+            if not line.strip():
+                continue
+            ev = json.loads(line)
+            if ev.get("type") == "system" and ev.get("subtype") == "init":
+                init = ev
+        self.assertIsNotNone(init)
+        # Direct scalar collisions: number/bool/null equal to a token -> sentinel.
+        self.assertEqual(init["num_hit"], run_eval.REDACTED)     # 30000 vs "30000"
+        self.assertEqual(init["num_one"], run_eval.REDACTED)     # 1 vs "1"
+        self.assertEqual(init["flag_on"], run_eval.REDACTED)     # true vs "true"
+        self.assertEqual(init["flag_off"], run_eval.REDACTED)    # false vs "false"
+        self.assertEqual(init["blank"], run_eval.REDACTED)       # null vs "null"
+        self.assertEqual(init["meta"]["inner"]["on"], run_eval.REDACTED)
+        self.assertEqual(init["meta"]["inner"]["gap"], run_eval.REDACTED)
+        # Non-colliding typed fields keep value and type.
+        self.assertEqual(init["meta"]["count"], 42)
+        self.assertEqual(init["meta"]["items"], [2, 3, 4])
+        self.assertEqual(init["meta"]["ratio"], 1.5)
+        # String values (and the routed model field) are substring-redacted.
+        self.assertEqual(init["str_echo"],
+                         "m=<redacted> n=<redacted> o=<redacted> <redacted> <redacted> <redacted>")
+        self.assertEqual(init["meta"]["deep"], "x-<redacted>-<redacted>")
+        self.assertEqual(init["model"], "claude-sonnet-5")  # not an imported token
+        # Every emitted value-named key collapsed to the sentinel; no key leaks.
+        self.assertNotIn("glm-4.7", init["keys"])
+        self.assertNotIn("30000", init["keys"])
+        self.assertNotIn("1", init["keys"])
 
     # -- correction: source mutation invalidates machine-readable checks --------
 
