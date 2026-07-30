@@ -289,22 +289,28 @@ def validate_payload(payload: dict[str, Any], path: Path) -> list[str]:
             if isinstance(source, str) and marker in source:
                 errors.append(f"{entry_where}.source: forbidden payload material ({marker!r})")
 
-        if isinstance(source, str) and source not in seen_sources:
-            seen_sources.add(source)
-            repo_path = (HARBOR_ROOT / source).resolve()
-            try:
-                root = HARBOR_ROOT.resolve()
-                repo_path.relative_to(root)
-            except ValueError:
-                errors.append(f"{entry_where}.source: resolves outside the repository")
-                continue
-            if source in APPROVED_PAYLOAD_SOURCES:
-                if not repo_path.is_file():
-                    errors.append(f"{entry_where}.source: approved file missing: {source}")
-                elif str(entry.get("sha256")) != sha256_file(repo_path):
-                    errors.append(f"{entry_where}.sha256: does not match {source}")
-            else:
-                errors.append(f"{entry_where}.source: not in the approved payload allowlist: {source}")
+        if not isinstance(source, str):
+            continue
+        # A fixed payload source may be staged at most once: a duplicate is a
+        # real input error, not something to silently skip after the first copy.
+        if source in seen_sources:
+            errors.append(f"{entry_where}.source: duplicate payload source {source!r}")
+            continue
+        seen_sources.add(source)
+        repo_path = (HARBOR_ROOT / source).resolve()
+        try:
+            root = HARBOR_ROOT.resolve()
+            repo_path.relative_to(root)
+        except ValueError:
+            errors.append(f"{entry_where}.source: resolves outside the repository")
+            continue
+        if source in APPROVED_PAYLOAD_SOURCES:
+            if not repo_path.is_file():
+                errors.append(f"{entry_where}.source: approved file missing: {source}")
+            elif str(entry.get("sha256")) != sha256_file(repo_path):
+                errors.append(f"{entry_where}.sha256: does not match {source}")
+        else:
+            errors.append(f"{entry_where}.source: not in the approved payload allowlist: {source}")
 
     # The fixed payload must include every approved source.
     for required in APPROVED_PAYLOAD_SOURCES:

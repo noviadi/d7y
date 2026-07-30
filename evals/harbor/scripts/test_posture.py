@@ -254,6 +254,13 @@ class TestPayloadValidator(unittest.TestCase):
         errors = posture.validate_payload(payload, Path("p"))
         self.assertTrue(any("missing required payload source" in e for e in errors))
 
+    def test_rejects_duplicate_source(self) -> None:
+        payload = self._payload()
+        duplicate = copy.deepcopy(payload["staged"][0])
+        payload["staged"].append(duplicate)
+        errors = posture.validate_payload(payload, Path("p"))
+        self.assertTrue(any("duplicate payload source" in e for e in errors))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -32,6 +32,11 @@ ARG CLAUDE_CODE_VERSION=2.1.218
 # bytes are content-addressed by the pinned version.
 ARG CLAUDE_BOOTSTRAP_URL=https://downloads.claude.ai/claude-code-releases/bootstrap.sh
 ARG CLAUDE_BOOTSTRAP_SHA256=cde4f1702d3b1695f92b73d26888364e17bca476e17f0fd676484c951d36c125
+# The recorded linux-x64 Claude Code binary SHA-256, asserted as an explicit
+# build input below. The installer already verifies the binary against the
+# version manifest; this independently enforces the expected installed bytes so
+# the build fails if the resolved binary does not match the recorded checksum.
+ARG CLAUDE_CODE_BINARY_SHA256=e12071751a9336b8af1012c103358ff04ac18f9aaff4a738cff7ba5cdfaf63f2
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -55,9 +60,9 @@ USER agent
 ENV HOME=/home/agent
 ENV PATH=/home/agent/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-# Fetch the pinned installer, verify its digest, install the pinned version, then
-# drop the downloaded archive to keep the layer small. The installer verifies the
-# platform binary against the version manifest before installing.
+# Fetch the pinned installer, verify its digest, and install the pinned version.
+# The installer verifies the platform binary against the version manifest before
+# installing; the explicit binary checksum is enforced in the next step.
 RUN set -euo pipefail; \
     cd "${HOME}"; \
     curl -fsSL "${CLAUDE_BOOTSTRAP_URL}" -o bootstrap.sh; \
@@ -67,6 +72,15 @@ RUN set -euo pipefail; \
     rm -rf "${HOME}/.claude/downloads"; \
     claude --version
 
+# Independently enforce the installed versioned binary checksum against the
+# recorded linux-x64 SHA-256 build input. `~/.local/bin/claude` is a symlink to
+# the versioned binary under `~/.local/share/claude/versions/`, so resolve it
+# before hashing. A mismatch fails the build rather than shipping an unverified
+# binary. No model call is made.
+RUN set -euo pipefail; \
+    bin="$(readlink -f "$(command -v claude)")"; \
+    printf '%s  %s\n' "${CLAUDE_CODE_BINARY_SHA256}" "${bin}" | sha256sum -c -
+
 # Final posture gate: the pinned agent version and required interpreters/tools
 # resolve from the non-root user's environment. This proves the install without
 # any model call.
@@ -75,3 +89,13 @@ RUN claude --version | grep -E '2\.1\.218' \
  && command -v bash \
  && command -v ps \
  && command -v pgrep
+
+# Remove the installer-generated Claude identity state from the retained image
+# AFTER all build-time version checks: the `~/.claude/` directory (config
+# backups) and the top-level `~/.claude.json` (generated machineID/userID and
+# migration flags). The retained image must carry no `.claude` directory, no
+# settings, no generated machine/user IDs, and no credentials. `claude` is left
+# installed; a fresh runtime creates what it needs at trial time.
+RUN rm -rf "${HOME}/.claude" "${HOME}/.claude.json" \
+ && test ! -e "${HOME}/.claude" \
+ && test ! -e "${HOME}/.claude.json"
