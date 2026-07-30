@@ -1,10 +1,11 @@
 {
   "schema_version": 1,
   "phase": 0,
+  "execution": "phase-0-review-corrections",
   "plan": "docs/plans/eval-execution-harness.md",
   "recorded_at": "2026-07-30",
-  "pre_build_source_commit": "a48dd0e",
-  "summary": "Phase 0 establishes the executable posture only. No Harbor trial, smoke task, case adapter, grader, or comparison runner was run or built.",
+  "pre_build_source_commit": "39fab1b",
+  "summary": "Phase 0 establishes the executable posture only. No Harbor trial, smoke task, case adapter, grader, or comparison runner was run or built. This record supersedes the initial Phase 0 build record with the review-correction rebuild (fail-closed scanner, enforced binary checksum, removed installer identity state, rejected duplicate payload sources, precise reproducibility).",
   "environment": {
     "python": "3.14.6",
     "uv": "0.11.31",
@@ -44,7 +45,8 @@
       "bootstrap_url": "https://downloads.claude.ai/claude-code-releases/bootstrap.sh",
       "bootstrap_sha256": "cde4f1702d3b1695f92b73d26888364e17bca476e17f0fd676484c951d36c125",
       "manifest_url": "https://downloads.claude.ai/claude-code-releases/2.1.218/manifest.json",
-      "checksum_source": "version manifest, verified by the installer before install"
+      "checksum_source": "version manifest, verified by the installer before install",
+      "binary_checksum_enforced": "the recorded binary_checksum is asserted as Dockerfile ARG CLAUDE_CODE_BINARY_SHA256 and verified against the installed resolved binary via sha256sum -c during the build; the build fails on mismatch"
     },
     "npm_package": {
       "name": "@anthropic-ai/claude-code",
@@ -77,23 +79,25 @@
     "agent": {
       "dockerfile": "evals/harbor/images/agent/Dockerfile",
       "tag": "d7y-eval-phase0-agent:2.1.218",
-      "config_digest": "sha256:5bd6dca2313307eea33d04789d39256079488d0ffb8de5e1efb415b0a613b595",
+      "config_digest": "sha256:34b394a9bb9cd961dec70513bce375a5acb6203775a7b9567d26cdf75c01e5c1",
       "configured_user": "agent (uid 1000, non-root)",
-      "layer_count": 8,
+      "layer_count": 11,
       "largest_layer": "273 MB (Claude Code native binary; downloads cleaned after install)",
       "env_key_names": ["PATH", "LANG", "GPG_KEY", "PYTHON_VERSION", "PYTHON_SHA256", "DEBIAN_FRONTEND", "PYTHONDONTWRITEBYTECODE", "HOME"],
       "volumes": null,
       "mounts": null,
       "copy_add_directives": "none",
       "secret_mounts": "none",
-      "build_args": ["BASE_IMAGE", "CLAUDE_CODE_VERSION=2.1.218", "CLAUDE_BOOTSTRAP_URL", "CLAUDE_BOOTSTRAP_SHA256"],
+      "build_args": ["BASE_IMAGE", "CLAUDE_CODE_VERSION=2.1.218", "CLAUDE_BOOTSTRAP_URL", "CLAUDE_BOOTSTRAP_SHA256", "CLAUDE_CODE_BINARY_SHA256=e12071751a9336b8af1012c103358ff04ac18f9aaff4a738cff7ba5cdfaf63f2"],
       "installed_packages": ["ca-certificates", "curl", "procps"],
-      "contains": "python3, bash, curl, procps, Claude Code 2.1.218; no D7Y source, evals, graders, settings, or credentials"
+      "binary_checksum_enforced": "verified during build: sha256sum -c on the resolved binary printed '<...>/2.1.218: OK'",
+      "identity_state_removed": "the installer's /home/agent/.claude directory and /home/agent/.claude.json (generated machineID/userID, migration flags) are removed after all build-time version checks; the recipe asserts their absence",
+      "contains": "python3, bash, curl, procps, Claude Code 2.1.218; no D7Y source, evals, graders, settings, generated identity state, or credentials"
     },
     "verifier": {
       "dockerfile": "evals/harbor/images/verifier/Dockerfile",
       "tag": "d7y-eval-phase0-verifier:phase0",
-      "config_digest": "sha256:ae7a327abd87df899ce3645d58b4e546e9456774ffa3f5d04a5b027c25e5040f",
+      "config_digest": "sha256:35b47fbb2fe1a4b01e9d10b6683a5e03e1e15aba4f5b9648d204186267023ca3",
       "configured_user": "verifier (uid 1001, non-root)",
       "env_key_names": ["PATH", "LANG", "GPG_KEY", "PYTHON_VERSION", "PYTHON_SHA256", "DEBIAN_FRONTEND", "PYTHONDONTWRITEBYTECODE", "HOME"],
       "volumes": null,
@@ -106,9 +110,20 @@
     }
   },
   "reproducibility": {
-    "base_pin": "digest-pinned python:3.12-slim (amd64)",
-    "claude_pin": "version 2.1.218 + bootstrap sha256 + manifest-verified binary checksum",
-    "final_build_from_pre_build_commit": "rebuilt both images from commit a48dd0e; digests identical to the initial from-scratch build (agent 5bd6dca2…, verifier ae7a327a…)"
+    "pinned_content_inputs": [
+      "base image python:3.12-slim pinned by amd64 manifest digest sha256:cab2dbf5…",
+      "Claude Code version 2.1.218 pinned by ARG",
+      "installer bootstrap.sh pinned by sha256 cde4f170… and verified before install",
+      "installed linux-x64 binary pinned by recorded sha256 e12071751a… and enforced against the resolved binary during the build"
+    ],
+    "exact_retained_identity": [
+      "agent image config digest sha256:34b394a9… (this rebuild)",
+      "verifier image config digest sha256:35b47fbb… (this rebuild)"
+    ],
+    "not_byte_for_byte_reproducible": "An independent no-cache rebuild does NOT yield a stable image digest. Demonstration in this very correction: the verifier Dockerfile was unchanged and its base is digest-pinned, yet the no-cache rebuild produced sha256:35b47fbb… versus the prior sha256:ae7a327a…. Each RUN layer is stamped with a build-time creation timestamp, so two independent builds always differ in layer history even with identical content. The initial Phase 0 record's 'digests identical across builds' observation held only because that second build reused cached layers (same timestamps); a cache-backed rebuild is not independent reproducibility and is not used as proof here.",
+    "debian_not_snapshot_pinned": "apt-get update resolves the current Debian trixie package set at build time; ca-certificates/curl/procps versions are not pinned to an apt snapshot.",
+    "future_rebuild_rule": "Any future rebuild that yields a different image digest must be rescanned (real scanner + canary, both fail-closed) and re-recorded before use; the agent binary checksum gate must still pass.",
+    "final_no_cache_build_from_pre_build_commit": "both images rebuilt with --no-cache from corrected pre-build commit 39fab1b; agent sha256:34b394a9…, verifier sha256:35b47fbb…"
   },
   "profile": {
     "path": "evals/harbor/profiles/claude-primary.json",
@@ -118,10 +133,11 @@
   },
   "canary_scan": {
     "scanner": "evals/harbor/scripts/scan_image.py",
-    "agent_image": "clean (no forbidden files, content, or secret env)",
+    "scanner_contract": "fails closed: a failed scan, canary build, canary scan, or cleanup is reported as a distinct command failure with redacted diagnostics and a non-zero exit, never CLEAN",
+    "agent_image": "clean (no forbidden files, content, secret env, or installer identity state; identity_state_present=false)",
     "verifier_image": "clean",
     "synthetic_secret_canary": "clean (secret supplied as build-arg and context file did not leak into the image)",
-    "agent_dot_claude_dir": "/home/agent/.claude exists as a Claude Code installer artifact; inspected to contain only default config backups (16 KiB; generated machineID/userID, migration flags); no settings.json, no credentials",
+    "identity_state_absent": "the retained agent image contains no /home/agent/.claude directory and no /home/agent/.claude.json; the installer-generated machineID/userID and config backups are removed after the build-time version checks. The scanner's IDENTITY probe reports absent for both images.",
     "limitation": "A filesystem scan proves the searched-for forbidden material and named secret bytes are absent; it cannot exhaustively disprove unknown secret bytes without reading every byte of the image."
   },
   "storage_enforcement": {
@@ -133,44 +149,69 @@
     "No XFS/project-quota data root; Harbor-managed writable-layer storage is unsupported (declared value retained as task metadata only).",
     "No host firewall certifies the launcher bootstrap declaration; not a Phase 0 blocker.",
     "Independent upstream route attestation is unavailable; effective model/provider remain runtime evidence, recorded when the endpoint exposes them and otherwise unavailable.",
-    "The image scan cannot exhaustively disprove unknown secret bytes without reading every byte."
+    "The image scan cannot exhaustively disprove unknown secret bytes without reading every byte.",
+    "Debian package resolution is not snapshot-pinned; apt-get update resolves the current trixie package set at build time.",
+    "Image digests are not byte-for-byte reproducible across independent no-cache rebuilds (layer creation timestamps differ); reproducibility here means pinned content inputs plus a recorded, verifiable retained image identity, not identical digests across rebuilds."
+  ],
+  "execution_deviations": [
+    {
+      "when": "initial Phase 0 execution (recorded truthfully here, not repeated in this correction)",
+      "what": "a disposable, unprefixed `docker run --rm hello-world` daemon probe was run once to verify Docker daemon access before the prefixed image work",
+      "cleanup": "the hello-world container was removed by --rm; the locally-cached hello-world image is a stock library image, not a D7Y resource, and was left in place",
+      "scope": "this is the sole execution deviation; all D7Y-created daemon resources are prefixed d7y-eval-phase0-"
+    }
   ],
   "external_resources_retained": [
     {
       "kind": "docker_image",
       "tag": "d7y-eval-phase0-agent:2.1.218",
-      "identity": "sha256:5bd6dca2313307eea33d04789d39256079488d0ffb8de5e1efb415b0a613b595",
+      "identity": "sha256:34b394a9bb9cd961dec70513bce375a5acb6203775a7b9567d26cdf75c01e5c1",
       "rebuild_recipe": "evals/harbor/images/agent/Dockerfile"
     },
     {
       "kind": "docker_image",
       "tag": "d7y-eval-phase0-verifier:phase0",
-      "identity": "sha256:ae7a327abd87df899ce3645d58b4e546e9456774ffa3f5d04a5b027c25e5040f",
+      "identity": "sha256:35b47fbb2fe1a4b01e9d10b6683a5e03e1e15aba4f5b9648d204186267023ca3",
       "rebuild_recipe": "evals/harbor/images/verifier/Dockerfile"
     }
   ],
-  "disposable_resources_removed": ["d7y-eval-phase0-canary:scratch (synthetic-secret canary image)"],
+  "disposable_resources_removed": ["d7y-eval-phase0-canary:scratch (synthetic-secret canary image, rebuilt and removed during this correction scan)"],
   "evidence_store": "No eval-evidence directory is created for Phase 0; no Harbor trial ran and no raw run artifacts exist to retain. Run evidence directories begin with Phase 1.",
   "inputs_for_phase_1": {
     "profile": "evals/harbor/profiles/claude-primary.json (claude-primary)",
     "execution_envelope": "evals/harbor/config/execution-posture.json (resources/network/timeouts/users/storage)",
-    "agent_image": "d7y-eval-phase0-agent:2.1.218 (digest in images.agent.config_digest)",
-    "verifier_image": "d7y-eval-phase0-verifier:phase0 (digest in images.verifier.config_digest)",
+    "agent_image": "d7y-eval-phase0-agent:2.1.218 (sha256:34b394a9…)",
+    "verifier_image": "d7y-eval-phase0-verifier:phase0 (sha256:35b47fbb…)",
     "payload_contract": "evals/harbor/payloads/starting-initiatives.json",
     "validator": "evals/harbor/scripts/posture.py",
     "notes": "Phase 1 builds the Harbor Oracle smoke task consuming this profile, envelope, and these images; it stages the runtime payload and adds the verifier test script and public checker to the separate verifier tests/ directory."
   },
+  "corrections": {
+    "execution": "phase-0-review-corrections",
+    "prompt": "docs/prompts/eval-execution-harness.phase-0-review-corrections.md",
+    "items": [
+      "scan_image.py now fails closed: scan, canary build, canary scan, and cleanup failures are distinct command failures with redacted diagnostics and a non-zero exit, never CLEAN",
+      "the recorded linux-x64 Claude Code binary sha256 is enforced as an explicit build input (ARG CLAUDE_CODE_BINARY_SHA256) and verified against the installed binary during the build",
+      "installer-generated identity state (/home/agent/.claude and /home/agent/.claude.json, carrying generated machineID/userID) is removed from the retained agent image after all version checks and asserted absent",
+      "the payload validator now rejects duplicate fixed sources instead of silently skipping after the first occurrence",
+      "reproducibility is described precisely: pinned content inputs and a recorded retained image identity, not byte-for-byte reproducibility; Debian is not snapshot-pinned; a cache-backed rebuild is not used as proof",
+      "the disposable unprefixed hello-world daemon probe from the initial execution is recorded as the original deviation and was not repeated"
+    ]
+  },
   "verification": {
     "uvx_harbor_version": "0.20.0 (pass)",
     "docker_version_and_info": "client/server 29.6.2, overlay2/ext4, default context (pass)",
-    "image_build": "both images built; digests stable across initial and final (from-commit) builds (pass)",
-    "container_claude_version": "2.1.218 (Claude Code) (pass)",
-    "image_inspection": "non-root users, no volumes/mounts, clean env key names, digest-pinned base (pass)",
-    "dockerfile_inspection": "no COPY/ADD/secret mounts; build args pinned (pass)",
-    "canary_scan": "agent and verifier clean; synthetic secret did not leak (pass)",
+    "image_build": "both images rebuilt --no-cache from corrected pre-build commit 39fab1b; agent sha256:34b394a9…, verifier sha256:35b47fbb… (pass)",
+    "container_claude_version": "2.1.218 (Claude Code); installed binary sha256 e12071751a… verified in-container, no model call (pass)",
+    "image_inspection": "non-root users, no volumes/mounts, clean env key names, digest-pinned base; agent /home/agent/.claude and /home/agent/.claude.json absent (pass)",
+    "dockerfile_inspection": "no COPY/ADD/secret mounts; pinned base, pinned version, enforced binary checksum, identity state removed after version checks (pass)",
+    "canary_scan": "agent and verifier CLEAN; synthetic-secret canary CLEAN; scanner fail-closed contract covered by 14 deterministic tests (pass)",
+    "binary_checksum_gate": "build step sha256sum -c on the resolved installed binary printed '<...>/2.1.218: OK' against the recorded sha256 (pass)",
     "posture_validator": "evals/harbor/scripts/posture.py (pass)",
-    "posture_tests": "25 tests pass (pass)",
+    "posture_tests": "26 tests pass, incl. duplicate-source rejection (pass)",
+    "scanner_tests": "evals/harbor/scripts/test_scan_image.py → 14 tests pass, incl. failed scan and failed canary build (pass)",
     "validate_skill_evals": "2 suites valid (pass)",
-    "d7y_validate": "evals + initiatives valid (pass)"
+    "d7y_validate": "evals + initiatives valid (pass)",
+    "git_diff_check_and_status": "clean (pass)"
   }
 }

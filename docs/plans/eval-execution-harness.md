@@ -692,7 +692,18 @@ New files under `evals/harbor/` only:
   `.dockerignore`;
 - `payloads/starting-initiatives.json` (runtime payload manifest);
 - `scripts/posture.py` (validator + digest logic), `scripts/test_posture.py`
-  (25 focused tests), `scripts/scan_image.py` (image canary scanner).
+  (26 focused tests, incl. duplicate-source rejection), `scripts/scan_image.py`
+  (image canary scanner, fails closed), `scripts/test_scan_image.py` (14
+  scanner fail-closed tests; no Docker daemon required).
+
+> Reconciled by the `phase-0-review-corrections` handoff (see _Review
+> corrections applied_ below): the scanner now fails closed, the recorded
+> Claude Code binary SHA-256 is enforced as a build input and verified against
+> the installed binary, installer-generated identity state is removed from the
+> retained agent image, duplicate payload sources are rejected, reproducibility
+> is stated precisely, and the original `hello-world` daemon probe is recorded
+> as the sole execution deviation. Digests, layer count, test counts, retained
+> resources, deviations, and limitations below reflect that rebuild.
 
 ### Exact versions and digests
 
@@ -702,8 +713,10 @@ New files under `evals/harbor/` only:
   cgroup v2 (systemd); kernel `7.1.4-arch1-1`; Arch Linux; host `archetude`.
 - Claude Code: `2.1.218`, commit `bce61b433bc397ce68686368abd12f545b0a013a`,
   build date `2026-07-22T18:42:19Z`, linux-x64 binary checksum
-  `e12071751a9336b8af1012c103358ff04ac18f9aaff4a738cff7ba5cdfaf63f2`,
-  installer bootstrap sha256
+  `e12071751a9336b8af1012c103358ff04ac18f9aaff4a738cff7ba5cdfaf63f2`
+  (enforced as Dockerfile `ARG CLAUDE_CODE_BINARY_SHA256` and verified against
+  the installed resolved binary via `sha256sum -c` during the build; the build
+  step printed `<...>/2.1.218: OK`), installer bootstrap sha256
   `cde4f1702d3b1695f92b73d26888364e17bca476e17f0fd676484c951d36c125`.
   npm package `@anthropic-ai/claude-code@2.1.218` recorded for traceability
   (shasum `018479d04265ca1b03b87060ca459d14419fac1f`); the image installs via
@@ -713,21 +726,32 @@ New files under `evals/harbor/` only:
   amd64 digest `sha256:cab2dbf575e971934a81e4622f5aba17aa7929719bd7e31033a3a83b97fd0464`
   (digest-pinned in both Dockerfiles), over `debian:trixie-slim`.
 - Agent image `d7y-eval-phase0-agent:2.1.218`:
-  `sha256:5bd6dca2313307eea33d04789d39256079488d0ffb8de5e1efb415b0a613b595`
-  (user `agent` uid 1000; 8 layers; 273 MB Claude layer; no `COPY`/`ADD`/secret
+  `sha256:34b394a9bb9cd961dec70513bce375a5acb6203775a7b9567d26cdf75c01e5c1`
+  (user `agent` uid 1000; 11 layers; 273 MB Claude layer; no `COPY`/`ADD`/secret
   mounts; env keys: PATH, LANG, GPG_KEY, PYTHON_VERSION, PYTHON_SHA256,
-  DEBIAN_FRONTEND, PYTHONDONTWRITEBYTECODE, HOME).
+  DEBIAN_FRONTEND, PYTHONDONTWRITEBYTECODE, HOME; installer identity state
+  `/home/agent/.claude` and `/home/agent/.claude.json` removed and asserted
+  absent).
 - Verifier image `d7y-eval-phase0-verifier:phase0`:
-  `sha256:ae7a327abd87df899ce3645d58b4e546e9456774ffa3f5d04a5b027c25e5040f`
-  (user `verifier` uid 1001; no `COPY`/`ADD`/secret mounts).
+  `sha256:35b47fbb2fe1a4b01e9d10b6683a5e03e1e15aba4f5b9648d204186267023ca3`
+  (user `verifier` uid 1001; no `COPY`/`ADD`/secret mounts). Recipe unchanged
+  from the initial build; the different digest is the no-cache rebuild artifact
+  (see _Reproducibility_).
 
 ### Docker context
 
 `default` context, endpoint `unix:///var/run/docker.sock`. Daemon access
-verified (`docker run --rm hello-world` succeeded). Backing filesystem is ext4
-on `/dev/mapper/home`; no XFS/project-quota data root (recorded limitation, not
-a blocker). Linked-worktree port/cache isolation does not apply; only resources
-prefixed `d7y-eval-phase0-` were created.
+verified. Backing filesystem is ext4 on `/dev/mapper/home`; no XFS/project-quota
+data root (recorded limitation, not a blocker). Linked-worktree port/cache
+isolation does not apply.
+
+Daemon-resource deviation (original Phase 0 execution; recorded here truthfully,
+not repeated in the correction rebuild): a single disposable, unprefixed
+`docker run --rm hello-world` probe was run once to confirm daemon access
+before the prefixed image work. The `hello-world` container was removed by
+`--rm`; the locally-cached `hello-world` image is a stock library image, not a
+D7Y resource, and was left in place. Every other daemon resource D7Y created is
+prefixed `d7y-eval-phase0-`.
 
 ### API-profile status
 
@@ -742,30 +766,62 @@ model/provider remain `unavailable` until runtime evidence exists.
 
 ### Pre-build source commit and final build
 
-Pre-build source commit: `a48dd0e` (all executable Phase 0 inputs). The final
-agent and verifier images were rebuilt from that commit and produced digests
-identical to the initial from-scratch build, confirming the recipes are
-reproducible from the pinned base + pinned Claude Code version + manifest-
-verified binary checksum.
+Pre-build source commit: `39fab1b` (the corrected executable inputs: fail-closed
+scanner, enforced binary checksum, identity-state removal, duplicate-source
+rejection, and tests). Both images were rebuilt `--no-cache` from that commit:
+agent `sha256:34b394a9…`, verifier `sha256:35b47fbb…`.
+
+### Reproducibility
+
+"Reproducible" here means **pinned content inputs plus a recorded, verifiable
+retained image identity** — not byte-for-byte reproducibility across rebuilds.
+
+What is pinned: the base image by amd64 manifest digest; the Claude Code version
+by `ARG`; the installer bootstrap by SHA-256; and the installed linux-x64 binary
+by the recorded SHA-256, enforced against the resolved binary during the build.
+
+What is not pinned or not stable: Debian package resolution is **not**
+snapshot-pinned (`apt-get update` resolves the current trixie set at build
+time), and `docker build` image digests are **not** byte-for-byte reproducible
+across independent no-cache rebuilds — each `RUN` layer is stamped with a
+build-time creation timestamp. This correction demonstrates it directly: the
+verifier recipe was unchanged and its base is digest-pinned, yet the no-cache
+rebuild produced `sha256:35b47fbb…` versus the prior `sha256:ae7a327a…`.
+
+The initial Phase 0 record's "digests identical across builds" observation held
+only because that second build reused cached layers (same timestamps); a
+cache-backed rebuild is not independent reproducibility and is no longer cited
+as proof. Any future rebuild that yields a different digest must be rescanned
+(real scanner + canary, both fail-closed) and re-recorded before use, and the
+agent binary checksum gate must still pass.
 
 ### Verification results
 
 - `uvx --from harbor==0.20.0 harbor --version` → `0.20.0` (pass).
 - `docker --version` / `docker info` → client/server `29.6.2`, overlay2/ext4,
   default context (pass).
-- Reproducible image build → both images built; digests stable across initial
-  and final (from-commit) builds (pass).
-- Container-side `claude --version` → `2.1.218 (Claude Code)`, no model call
-  (pass).
+- No-cache image build → both images rebuilt `--no-cache` from `39fab1b`:
+  agent `sha256:34b394a9…`, verifier `sha256:35b47fbb…` (pass).
+- Binary checksum gate → build step `sha256sum -c` on the resolved installed
+  binary printed `<...>/2.1.218: OK` against the recorded sha256 (pass).
+- Container-side `claude --version` → `2.1.218 (Claude Code)` and installed
+  binary sha256 `e12071751a…` verified in-container, no model call (pass).
 - Image inspection → non-root users, no volumes/mounts, clean env key names,
-  digest-pinned base (pass).
-- Dockerfile inspection → no `COPY`/`ADD`/secret mounts; build args pinned
-  (pass).
-- Image canary scan → agent and verifier clean; synthetic-secret rebuild
-  canary (secret as build-arg + context file) did not leak (pass).
+  digest-pinned base; `/home/agent/.claude` and `/home/agent/.claude.json`
+  absent (pass).
+- Dockerfile inspection → no `COPY`/`ADD`/secret mounts; pinned base, pinned
+  version, enforced binary checksum, identity state removed after version
+  checks (pass).
+- Image canary scan → agent and verifier `CLEAN` (`identity_state_present=false`,
+  `scan_command_failed=false`); synthetic-secret rebuild canary (secret as
+  build-arg + context file) `CLEAN`, did not leak; the scanner's fail-closed
+  contract is covered by `test_scan_image.py` (pass).
 - `evals/harbor/scripts/posture.py` → profile, envelope, and payload valid,
   digests verified (pass).
-- `evals/harbor/scripts/test_posture.py` → 25 tests pass (pass).
+- `evals/harbor/scripts/test_posture.py` → 26 tests pass, incl. duplicate-source
+  rejection (pass).
+- `evals/harbor/scripts/test_scan_image.py` → 14 tests pass, incl. failed scan
+  and failed canary build (pass).
 - `python3 evals/validate_skill_evals.py` → 2 suites valid (pass).
 - `./d7y validate` → evals + initiatives valid (pass).
 - `git diff --check` and `git status --short` → clean (pass).
@@ -775,23 +831,29 @@ Harbor execution pass.
 
 ### External resources retained
 
-- Docker image `d7y-eval-phase0-agent:2.1.218` (identity and rebuild recipe
-  recorded above).
-- Docker image `d7y-eval-phase0-verifier:phase0` (identity and rebuild recipe
-  recorded above).
+- Docker image `d7y-eval-phase0-agent:2.1.218`
+  (`sha256:34b394a9…`; identity and rebuild recipe recorded above).
+- Docker image `d7y-eval-phase0-verifier:phase0`
+  (`sha256:35b47fbb…`; identity and rebuild recipe recorded above).
 
 The disposable `d7y-eval-phase0-canary:scratch` synthetic-secret image was
-removed. No eval-evidence directory is created for Phase 0: no Harbor trial ran
-and no raw run artifacts exist to retain; run evidence directories begin with
-Phase 1.
+rebuilt and removed during the correction scan. No eval-evidence directory is
+created for Phase 0: no Harbor trial ran and no raw run artifacts exist to
+retain; run evidence directories begin with Phase 1.
 
 ### Deviations
 
-None. The agent image uses the native Claude Code installer (not npm) because
-that is the exact path Harbor's v0.20.0 claude-code adapter uses, so the
-adapter detects the pinned version and skips runtime install; the npm package
-metadata is recorded for traceability. No scope was expanded into Phase 1
-behavior.
+- Daemon-resource deviation (original Phase 0 execution): a single disposable,
+  unprefixed `docker run --rm hello-world` probe was run once to confirm daemon
+  access before the prefixed image work. The `hello-world` container was
+  removed by `--rm`; the cached `hello-world` library image was left in place.
+  Every other D7Y-created daemon resource is prefixed `d7y-eval-phase0-`. This
+  was not repeated in the correction rebuild.
+- The agent image uses the native Claude Code installer (not npm) because that
+  is the exact path Harbor's v0.20.0 claude-code adapter uses, so the adapter
+  detects the pinned version and skips runtime install; the npm package
+  metadata is recorded for traceability. No scope was expanded into Phase 1
+  behavior.
 
 ### Limitations
 
@@ -802,12 +864,42 @@ behavior.
   blocker).
 - Independent upstream route attestation is unavailable; effective
   model/provider remain runtime evidence.
-- `/home/agent/.claude/` exists as a Claude Code installer artifact and was
-  inspected to contain only default config backups (16 KiB; generated
-  machineID/userID, migration flags); no `settings.json`, no credentials.
+- Debian package resolution is not snapshot-pinned; `apt-get update` resolves
+  the current trixie set at build time.
+- Image digests are not byte-for-byte reproducible across independent no-cache
+  rebuilds (see _Reproducibility_); reproducibility means pinned content inputs
+  plus a recorded, verifiable retained image identity, not identical digests.
 - The image scan proves the searched-for forbidden material and named secret
-  bytes are absent; it cannot exhaustively disprove unknown secret bytes
-  without reading every byte.
+  bytes are absent (including the installer identity state, now removed); it
+  cannot exhaustively disprove unknown secret bytes without reading every byte.
+
+### Review corrections applied
+
+This `phase-0-review-corrections` handoff corrected the bounded Phase 0 review
+findings and rebuilt the images `--no-cache` from `39fab1b`:
+
+1. `scan_image.py` fails closed — a failed scan, canary build, canary scan, or
+   cleanup is a distinct command failure with redacted diagnostics and a
+   non-zero exit, never `CLEAN`. Covered by `test_scan_image.py` (14 tests).
+2. The recorded linux-x64 Claude Code binary SHA-256 is an explicit build input
+   (`ARG CLAUDE_CODE_BINARY_SHA256`) and is verified against the installed
+   binary during the build; the gate printed `<...>/2.1.218: OK`.
+3. Installer-generated identity state (`/home/agent/.claude` and
+   `/home/agent/.claude.json`, carrying generated machine/user IDs) is removed
+   from the retained agent image after all version checks and asserted absent;
+   the scanner confirms `identity_state_present=false`.
+4. Duplicate fixed payload sources are now rejected by `posture.py` rather than
+   silently skipped; covered by a focused invalid-case test.
+5. Reproducibility is stated precisely (pinned inputs + recorded retained
+   identity, not byte-for-byte; Debian not snapshot-pinned; no cache-backed
+   proof) — see _Reproducibility_.
+6. The original `hello-world` daemon probe is recorded as the sole execution
+   deviation — see _Deviations_ and _Docker context_.
+
+Residual risk: the binary checksum gate and scanner are strong but cannot
+exhaustively disprove unknown secret bytes, and a future rebuild with a
+different digest requires rescanning before use. Static validation and image
+construction remain posture evidence, not a Harbor execution pass.
 
 ### Inputs required by Phase 1
 
@@ -816,9 +908,9 @@ behavior.
   (2 CPU/4096 MiB limit, 600 s agent, 120 s verifier, `no-network` baseline,
   `api.z.ai` agent allowlist, separate no-network verifier).
 - Agent image: `d7y-eval-phase0-agent:2.1.218`
-  (`sha256:5bd6dca2…`).
+  (`sha256:34b394a9…`).
 - Verifier image: `d7y-eval-phase0-verifier:phase0`
-  (`sha256:ae7a327a…`).
+  (`sha256:35b47fbb…`).
 - Payload contract: `evals/harbor/payloads/starting-initiatives.json`.
 - Validator: `evals/harbor/scripts/posture.py`.
 

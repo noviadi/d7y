@@ -31,7 +31,8 @@ evals/harbor/
 └── scripts/
     ├── posture.py                    # profile/posture/payload validator + digests
     ├── test_posture.py               # focused parser/digest tests
-    └── scan_image.py                 # image canary + synthetic-secret scanner
+    ├── scan_image.py                 # image canary + synthetic-secret scanner (fails closed)
+    └── test_scan_image.py            # scanner fail-closed tests (no Docker daemon)
 ```
 
 ## Inputs
@@ -62,7 +63,12 @@ else), so no repository source is sent to the daemon.
 
 - **Agent** (`images/agent/Dockerfile`) — installs the pinned Claude Code native
   build via the checksum-verified official installer and the shell/process tools
-  Harbor's claude-code adapter needs (`curl`, `procps`). Harbor detects
+  Harbor's claude-code adapter needs (`curl`, `procps`). The recorded linux-x64
+  binary SHA-256 is an explicit build input (`CLAUDE_CODE_BINARY_SHA256`) and is
+  verified against the installed binary during the build, independent of the
+  installer's manifest check. After all version checks, the installer-generated
+  identity state (`~/.claude/` and `~/.claude.json`, carrying generated
+  machine/user IDs) is removed and asserted absent. Harbor detects
   `claude --version` matches the requested version and skips runtime install.
 - **Verifier** (`images/verifier/Dockerfile`) — the separate, no-network verifier
   posture: a clean `python3` + `bash` base as a non-root `verifier` user, with no
@@ -78,15 +84,42 @@ docker build -t d7y-eval-phase0-verifier:phase0 -f evals/harbor/images/verifier/
 ## Validate and scan
 
 ```sh
-python3 evals/harbor/scripts/posture.py            # validate profile, envelope, payload + digests
-python3 evals/harbor/scripts/test_posture.py       # focused parser/digest tests
-python3 evals/harbor/scripts/scan_image.py --canary  # image canary + synthetic-secret scan
+python3 evals/harbor/scripts/posture.py             # validate profile, envelope, payload + digests
+python3 evals/harbor/scripts/test_posture.py        # focused parser/digest tests (26)
+python3 evals/harbor/scripts/test_scan_image.py     # scanner fail-closed tests (14), no Docker daemon
+python3 evals/harbor/scripts/scan_image.py --canary # image canary + synthetic-secret scan (fails closed)
 ```
+
+The scanner **fails closed**: a scan, canary build, canary scan, or cleanup that
+cannot execute is reported as a distinct command failure with redacted
+diagnostics and a non-zero exit — never `CLEAN` — so a missing image, dead
+daemon, or Docker exit code such as 125 can never become absence evidence.
+
+## Reproducibility
+
+"Reproducible" here means **pinned content inputs plus a recorded, verifiable
+retained image identity**, not byte-for-byte reproducibility across rebuilds:
+
+- the base image is pinned by amd64 manifest digest, the Claude Code version by
+  `ARG`, the installer bootstrap by SHA-256, and the installed binary by the
+  recorded SHA-256 (enforced during the build);
+- an independent `--no-cache` rebuild does **not** yield a stable image digest —
+  each `RUN` layer is stamped with a build-time timestamp, so two independent
+  builds always differ in layer history (demonstrated: the unchanged verifier
+  recipe rebuilt no-cache produced a different digest);
+- Debian package resolution is **not** snapshot-pinned (`apt-get update`
+  resolves the current trixie set at build time);
+- a cache-backed rebuild is therefore not independent reproducibility and is not
+  used as proof;
+- any future rebuild that yields a different digest must be rescanned (real
+  scanner + canary, both fail-closed) and re-recorded before use.
 
 ## Invariants
 
 - No source checkout, host settings, eval definitions, expected outcomes,
-  graders, benchmark material, or credentials are baked into either image.
+  graders, benchmark material, generated identity state, or credentials are
+  baked into either image. The agent image's installer-generated `~/.claude/`
+  and `~/.claude.json` are removed after the version checks and asserted absent.
 - Credential values are external; only the key name is recorded anywhere.
 - Harbor-managed writable-layer storage enforcement is recorded `unsupported`,
   not simulated; the declared `storage_mb` is task metadata only.
