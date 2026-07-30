@@ -1,0 +1,176 @@
+{
+  "schema_version": 1,
+  "phase": 0,
+  "plan": "docs/plans/eval-execution-harness.md",
+  "recorded_at": "2026-07-30",
+  "pre_build_source_commit": "a48dd0e",
+  "summary": "Phase 0 establishes the executable posture only. No Harbor trial, smoke task, case adapter, grader, or comparison runner was run or built.",
+  "environment": {
+    "python": "3.14.6",
+    "uv": "0.11.31",
+    "harbor": {
+      "version": "0.20.0",
+      "invocation": "uvx --from harbor==0.20.0 harbor --version",
+      "scope": "pinned, non-global (uvx ephemeral environment)"
+    },
+    "docker": {
+      "client_version": "29.6.2",
+      "server_version": "29.6.2",
+      "context": {
+        "name": "default",
+        "endpoint": "unix:///var/run/docker.sock"
+      },
+      "storage_driver": "overlay2",
+      "backing_filesystem": "extfs",
+      "data_root_fs_type": "ext4",
+      "data_root": "/var/lib/docker",
+      "cgroup_version": "2",
+      "cgroup_driver": "systemd",
+      "runtime": "runc (io.containerd.runc.v2)",
+      "kernel": "7.1.4-arch1-1",
+      "os": "Arch Linux",
+      "host": "archetude",
+      "daemon_access": "verified (docker run --rm hello-world succeeded)"
+    }
+  },
+  "claude_code": {
+    "version": "2.1.218",
+    "commit": "bce61b433bc397ce68686368abd12f545b0a013a",
+    "build_date": "2026-07-22T18:42:19Z",
+    "platform": "linux-x64",
+    "binary_checksum": "e12071751a9336b8af1012c103358ff04ac18f9aaff4a738cff7ba5cdfaf63f2",
+    "binary_size": 273177584,
+    "installer": {
+      "bootstrap_url": "https://downloads.claude.ai/claude-code-releases/bootstrap.sh",
+      "bootstrap_sha256": "cde4f1702d3b1695f92b73d26888364e17bca476e17f0fd676484c951d36c125",
+      "manifest_url": "https://downloads.claude.ai/claude-code-releases/2.1.218/manifest.json",
+      "checksum_source": "version manifest, verified by the installer before install"
+    },
+    "npm_package": {
+      "name": "@anthropic-ai/claude-code",
+      "version": "2.1.218",
+      "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-code/-/claude-code-2.1.218.tgz",
+      "shasum": "018479d04265ca1b03b87060ca459d14419fac1f",
+      "note": "recorded for traceability; the image uses the native installer, matching Harbor's own install path"
+    },
+    "install_path": "/home/agent/.local/bin/claude",
+    "container_version_proof": "2.1.218 (Claude Code)",
+    "harbor_adapter": {
+      "version": "0.20.0",
+      "source": "src/harbor/agents/installed/claude_code.py @ v0.20.0",
+      "prebuilt": true,
+      "detection": "compares claude --version to the requested version and skips install when it matches",
+      "max_turns_cli": "--max-turns (env CLAUDE_CODE_MAX_TURNS)",
+      "max_budget_usd_cli": "--max-budget-usd",
+      "reasoning_effort_cli": "--effort",
+      "trajectory": "JSONL sessions under logs_dir/sessions/projects; invocation/model/usage fields evaluated in a later phase"
+    }
+  },
+  "images": {
+    "base": {
+      "image": "python:3.12-slim",
+      "manifest_list_digest": "sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de",
+      "amd64_digest": "sha256:cab2dbf575e971934a81e4622f5aba17aa7929719bd7e31033a3a83b97fd0464",
+      "underlying": "debian:trixie-slim",
+      "pinned_in_dockerfile": "sha256:cab2dbf575e971934a81e4622f5aba17aa7929719bd7e31033a3a83b97fd0464"
+    },
+    "agent": {
+      "dockerfile": "evals/harbor/images/agent/Dockerfile",
+      "tag": "d7y-eval-phase0-agent:2.1.218",
+      "config_digest": "sha256:5bd6dca2313307eea33d04789d39256079488d0ffb8de5e1efb415b0a613b595",
+      "configured_user": "agent (uid 1000, non-root)",
+      "layer_count": 8,
+      "largest_layer": "273 MB (Claude Code native binary; downloads cleaned after install)",
+      "env_key_names": ["PATH", "LANG", "GPG_KEY", "PYTHON_VERSION", "PYTHON_SHA256", "DEBIAN_FRONTEND", "PYTHONDONTWRITEBYTECODE", "HOME"],
+      "volumes": null,
+      "mounts": null,
+      "copy_add_directives": "none",
+      "secret_mounts": "none",
+      "build_args": ["BASE_IMAGE", "CLAUDE_CODE_VERSION=2.1.218", "CLAUDE_BOOTSTRAP_URL", "CLAUDE_BOOTSTRAP_SHA256"],
+      "installed_packages": ["ca-certificates", "curl", "procps"],
+      "contains": "python3, bash, curl, procps, Claude Code 2.1.218; no D7Y source, evals, graders, settings, or credentials"
+    },
+    "verifier": {
+      "dockerfile": "evals/harbor/images/verifier/Dockerfile",
+      "tag": "d7y-eval-phase0-verifier:phase0",
+      "config_digest": "sha256:ae7a327abd87df899ce3645d58b4e546e9456774ffa3f5d04a5b027c25e5040f",
+      "configured_user": "verifier (uid 1001, non-root)",
+      "env_key_names": ["PATH", "LANG", "GPG_KEY", "PYTHON_VERSION", "PYTHON_SHA256", "DEBIAN_FRONTEND", "PYTHONDONTWRITEBYTECODE", "HOME"],
+      "volumes": null,
+      "mounts": null,
+      "copy_add_directives": "none",
+      "secret_mounts": "none",
+      "network_baseline": "no-network (Harbor [verifier.environment].network_mode; --network none proven)",
+      "private_graders": "none (Phase 0 posture only)",
+      "contains": "python3, bash; no D7Y source, graders, settings, or credentials"
+    }
+  },
+  "reproducibility": {
+    "base_pin": "digest-pinned python:3.12-slim (amd64)",
+    "claude_pin": "version 2.1.218 + bootstrap sha256 + manifest-verified binary checksum",
+    "final_build_from_pre_build_commit": "rebuilt both images from commit a48dd0e; digests identical to the initial from-scratch build (agent 5bd6dca2…, verifier ae7a327a…)"
+  },
+  "profile": {
+    "path": "evals/harbor/profiles/claude-primary.json",
+    "name": "claude-primary",
+    "redacted_digest": "3088a1cae0ff9b0d1824c68f744b19402dfda1698cb9d096dcefe7e367ea0694",
+    "credential_value_recorded": false
+  },
+  "canary_scan": {
+    "scanner": "evals/harbor/scripts/scan_image.py",
+    "agent_image": "clean (no forbidden files, content, or secret env)",
+    "verifier_image": "clean",
+    "synthetic_secret_canary": "clean (secret supplied as build-arg and context file did not leak into the image)",
+    "agent_dot_claude_dir": "/home/agent/.claude exists as a Claude Code installer artifact; inspected to contain only default config backups (16 KiB; generated machineID/userID, migration flags); no settings.json, no credentials",
+    "limitation": "A filesystem scan proves the searched-for forbidden material and named secret bytes are absent; it cannot exhaustively disprove unknown secret bytes without reading every byte of the image."
+  },
+  "storage_enforcement": {
+    "declared_storage_mb": 10240,
+    "effective_support": "unsupported",
+    "basis": "local Docker overlay2 on an ext4 data root with no XFS/project-quota support; Harbor passes storage_mb through only on quota-capable providers. Recorded as a limitation, not a blocker."
+  },
+  "limitations": [
+    "No XFS/project-quota data root; Harbor-managed writable-layer storage is unsupported (declared value retained as task metadata only).",
+    "No host firewall certifies the launcher bootstrap declaration; not a Phase 0 blocker.",
+    "Independent upstream route attestation is unavailable; effective model/provider remain runtime evidence, recorded when the endpoint exposes them and otherwise unavailable.",
+    "The image scan cannot exhaustively disprove unknown secret bytes without reading every byte."
+  ],
+  "external_resources_retained": [
+    {
+      "kind": "docker_image",
+      "tag": "d7y-eval-phase0-agent:2.1.218",
+      "identity": "sha256:5bd6dca2313307eea33d04789d39256079488d0ffb8de5e1efb415b0a613b595",
+      "rebuild_recipe": "evals/harbor/images/agent/Dockerfile"
+    },
+    {
+      "kind": "docker_image",
+      "tag": "d7y-eval-phase0-verifier:phase0",
+      "identity": "sha256:ae7a327abd87df899ce3645d58b4e546e9456774ffa3f5d04a5b027c25e5040f",
+      "rebuild_recipe": "evals/harbor/images/verifier/Dockerfile"
+    }
+  ],
+  "disposable_resources_removed": ["d7y-eval-phase0-canary:scratch (synthetic-secret canary image)"],
+  "evidence_store": "No eval-evidence directory is created for Phase 0; no Harbor trial ran and no raw run artifacts exist to retain. Run evidence directories begin with Phase 1.",
+  "inputs_for_phase_1": {
+    "profile": "evals/harbor/profiles/claude-primary.json (claude-primary)",
+    "execution_envelope": "evals/harbor/config/execution-posture.json (resources/network/timeouts/users/storage)",
+    "agent_image": "d7y-eval-phase0-agent:2.1.218 (digest in images.agent.config_digest)",
+    "verifier_image": "d7y-eval-phase0-verifier:phase0 (digest in images.verifier.config_digest)",
+    "payload_contract": "evals/harbor/payloads/starting-initiatives.json",
+    "validator": "evals/harbor/scripts/posture.py",
+    "notes": "Phase 1 builds the Harbor Oracle smoke task consuming this profile, envelope, and these images; it stages the runtime payload and adds the verifier test script and public checker to the separate verifier tests/ directory."
+  },
+  "verification": {
+    "uvx_harbor_version": "0.20.0 (pass)",
+    "docker_version_and_info": "client/server 29.6.2, overlay2/ext4, default context (pass)",
+    "image_build": "both images built; digests stable across initial and final (from-commit) builds (pass)",
+    "container_claude_version": "2.1.218 (Claude Code) (pass)",
+    "image_inspection": "non-root users, no volumes/mounts, clean env key names, digest-pinned base (pass)",
+    "dockerfile_inspection": "no COPY/ADD/secret mounts; build args pinned (pass)",
+    "canary_scan": "agent and verifier clean; synthetic secret did not leak (pass)",
+    "posture_validator": "evals/harbor/scripts/posture.py (pass)",
+    "posture_tests": "25 tests pass (pass)",
+    "validate_skill_evals": "2 suites valid (pass)",
+    "d7y_validate": "evals + initiatives valid (pass)"
+  }
+}

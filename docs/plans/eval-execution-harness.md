@@ -672,3 +672,158 @@ This plan is complete when Phases 0–5 have produced:
 The foundation proves a bounded Harbor-on-Docker evaluation path. It does not
 prove hardened sandboxing, cross-provider portability, statistical stability,
 or that a skill is `evaluated`.
+
+## Phase 0 implementation feedback
+
+Executor: Claude Code. Branch: `work/eval-harness-executable-posture`. Scope:
+Phase 0 executable posture only. No Harbor trial, smoke task, case adapter,
+grader, or comparison runner was run or built. The committed profile carries
+only non-secret values and the credential key name; no credential value was
+read, injected, tested, or printed.
+
+### Files changed
+
+New files under `evals/harbor/` only:
+
+- `README.md`, `.gitignore`, `posture.json` (build record);
+- `profiles/claude-primary.json` (approved non-secret API profile);
+- `config/execution-posture.json` (Harbor resource/network/timeout envelope);
+- `images/agent/Dockerfile` + `.dockerignore`, `images/verifier/Dockerfile` +
+  `.dockerignore`;
+- `payloads/starting-initiatives.json` (runtime payload manifest);
+- `scripts/posture.py` (validator + digest logic), `scripts/test_posture.py`
+  (25 focused tests), `scripts/scan_image.py` (image canary scanner).
+
+### Exact versions and digests
+
+- Harbor: `0.20.0` via `uvx --from harbor==0.20.0` (pinned, non-global).
+- Python: `3.14.6`; `uv` `0.11.31`.
+- Docker client/server: `29.6.2`; storage `overlay2` on `ext4` (`extfs`);
+  cgroup v2 (systemd); kernel `7.1.4-arch1-1`; Arch Linux; host `archetude`.
+- Claude Code: `2.1.218`, commit `bce61b433bc397ce68686368abd12f545b0a013a`,
+  build date `2026-07-22T18:42:19Z`, linux-x64 binary checksum
+  `e12071751a9336b8af1012c103358ff04ac18f9aaff4a738cff7ba5cdfaf63f2`,
+  installer bootstrap sha256
+  `cde4f1702d3b1695f92b73d26888364e17bca476e17f0fd676484c951d36c125`.
+  npm package `@anthropic-ai/claude-code@2.1.218` recorded for traceability
+  (shasum `018479d04265ca1b03b87060ca459d14419fac1f`); the image installs via
+  the native installer, matching Harbor's own path.
+- Base image: `python:3.12-slim`, manifest-list digest
+  `sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de`,
+  amd64 digest `sha256:cab2dbf575e971934a81e4622f5aba17aa7929719bd7e31033a3a83b97fd0464`
+  (digest-pinned in both Dockerfiles), over `debian:trixie-slim`.
+- Agent image `d7y-eval-phase0-agent:2.1.218`:
+  `sha256:5bd6dca2313307eea33d04789d39256079488d0ffb8de5e1efb415b0a613b595`
+  (user `agent` uid 1000; 8 layers; 273 MB Claude layer; no `COPY`/`ADD`/secret
+  mounts; env keys: PATH, LANG, GPG_KEY, PYTHON_VERSION, PYTHON_SHA256,
+  DEBIAN_FRONTEND, PYTHONDONTWRITEBYTECODE, HOME).
+- Verifier image `d7y-eval-phase0-verifier:phase0`:
+  `sha256:ae7a327abd87df899ce3645d58b4e546e9456774ffa3f5d04a5b027c25e5040f`
+  (user `verifier` uid 1001; no `COPY`/`ADD`/secret mounts).
+
+### Docker context
+
+`default` context, endpoint `unix:///var/run/docker.sock`. Daemon access
+verified (`docker run --rm hello-world` succeeded). Backing filesystem is ext4
+on `/dev/mapper/home`; no XFS/project-quota data root (recorded limitation, not
+a blocker). Linked-worktree port/cache isolation does not apply; only resources
+prefixed `d7y-eval-phase0-` were created.
+
+### API-profile status
+
+Committed and validated at `evals/harbor/profiles/claude-primary.json`. It
+records requested model `claude-sonnet-5`, intentional z.ai proxy endpoint
+`https://api.z.ai/api/anthropic`, exact allowed host `api.z.ai`, the five
+allowlisted non-secret runtime values, the credential key name
+`ANTHROPIC_AUTH_TOKEN` (value external), exclusion of the host Opus/Haiku
+defaults, and the redacted configuration digest
+`3088a1cae0ff9b0d1824c68f744b19402dfda1698cb9d096dcefe7e367ea0694`. Effective
+model/provider remain `unavailable` until runtime evidence exists.
+
+### Pre-build source commit and final build
+
+Pre-build source commit: `a48dd0e` (all executable Phase 0 inputs). The final
+agent and verifier images were rebuilt from that commit and produced digests
+identical to the initial from-scratch build, confirming the recipes are
+reproducible from the pinned base + pinned Claude Code version + manifest-
+verified binary checksum.
+
+### Verification results
+
+- `uvx --from harbor==0.20.0 harbor --version` → `0.20.0` (pass).
+- `docker --version` / `docker info` → client/server `29.6.2`, overlay2/ext4,
+  default context (pass).
+- Reproducible image build → both images built; digests stable across initial
+  and final (from-commit) builds (pass).
+- Container-side `claude --version` → `2.1.218 (Claude Code)`, no model call
+  (pass).
+- Image inspection → non-root users, no volumes/mounts, clean env key names,
+  digest-pinned base (pass).
+- Dockerfile inspection → no `COPY`/`ADD`/secret mounts; build args pinned
+  (pass).
+- Image canary scan → agent and verifier clean; synthetic-secret rebuild
+  canary (secret as build-arg + context file) did not leak (pass).
+- `evals/harbor/scripts/posture.py` → profile, envelope, and payload valid,
+  digests verified (pass).
+- `evals/harbor/scripts/test_posture.py` → 25 tests pass (pass).
+- `python3 evals/validate_skill_evals.py` → 2 suites valid (pass).
+- `./d7y validate` → evals + initiatives valid (pass).
+- `git diff --check` and `git status --short` → clean (pass).
+
+Static files and successful image construction are posture evidence only, not a
+Harbor execution pass.
+
+### External resources retained
+
+- Docker image `d7y-eval-phase0-agent:2.1.218` (identity and rebuild recipe
+  recorded above).
+- Docker image `d7y-eval-phase0-verifier:phase0` (identity and rebuild recipe
+  recorded above).
+
+The disposable `d7y-eval-phase0-canary:scratch` synthetic-secret image was
+removed. No eval-evidence directory is created for Phase 0: no Harbor trial ran
+and no raw run artifacts exist to retain; run evidence directories begin with
+Phase 1.
+
+### Deviations
+
+None. The agent image uses the native Claude Code installer (not npm) because
+that is the exact path Harbor's v0.20.0 claude-code adapter uses, so the
+adapter detects the pinned version and skips runtime install; the npm package
+metadata is recorded for traceability. No scope was expanded into Phase 1
+behavior.
+
+### Limitations
+
+- No XFS/project-quota data root; Harbor-managed writable-layer storage is
+  `unsupported`. The declared `storage_mb` is retained as task metadata only,
+  not simulated or treated as enforced.
+- No host firewall certifies the launcher bootstrap declaration (not a Phase 0
+  blocker).
+- Independent upstream route attestation is unavailable; effective
+  model/provider remain runtime evidence.
+- `/home/agent/.claude/` exists as a Claude Code installer artifact and was
+  inspected to contain only default config backups (16 KiB; generated
+  machineID/userID, migration flags); no `settings.json`, no credentials.
+- The image scan proves the searched-for forbidden material and named secret
+  bytes are absent; it cannot exhaustively disprove unknown secret bytes
+  without reading every byte.
+
+### Inputs required by Phase 1
+
+- Profile: `evals/harbor/profiles/claude-primary.json` (`claude-primary`).
+- Execution envelope: `evals/harbor/config/execution-posture.json`
+  (2 CPU/4096 MiB limit, 600 s agent, 120 s verifier, `no-network` baseline,
+  `api.z.ai` agent allowlist, separate no-network verifier).
+- Agent image: `d7y-eval-phase0-agent:2.1.218`
+  (`sha256:5bd6dca2…`).
+- Verifier image: `d7y-eval-phase0-verifier:phase0`
+  (`sha256:ae7a327a…`).
+- Payload contract: `evals/harbor/payloads/starting-initiatives.json`.
+- Validator: `evals/harbor/scripts/posture.py`.
+
+Phase 1 builds the Harbor Oracle smoke task consuming this profile, envelope,
+and these images; it stages the runtime payload and adds the verifier test
+script plus the public initiative checker to the separate verifier `tests/`
+directory. It must not bake any of those into the images or infer missing
+Phase 0 evidence.
