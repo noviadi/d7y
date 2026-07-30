@@ -95,6 +95,15 @@ cannot execute is reported as a distinct command failure with redacted
 diagnostics and a non-zero exit — never `CLEAN` — so a missing image, dead
 daemon, or Docker exit code such as 125 can never become absence evidence.
 
+The scanner runs as root (`--user 0:0`) for complete filesystem inspection while
+preserving the image's configured non-root runtime user. Internal `find` and `grep`
+traversals are monitored for exit codes: `find` exit > 0 indicates unreadable
+paths, while `grep` exit 1 means no matches (valid) and exit > 1 indicates command
+failure. The output protocol requires well-formed `FILES`, `CONTENT`, `IDENTITY`,
+`FIND_EXIT`, and `GREP_EXIT` sections; missing or malformed sections are protocol
+errors that fail closed. The synthetic canary token is fully redacted from
+diagnostics.
+
 ## Reproducibility
 
 "Reproducible" here means **pinned content inputs plus a recorded, verifiable

@@ -901,6 +901,96 @@ exhaustively disprove unknown secret bytes, and a future rebuild with a
 different digest requires rescanning before use. Static validation and image
 construction remain posture evidence, not a Harbor execution pass.
 
+### Phase 0 scanner-completeness correction
+
+Executor: Claude Code. Branch: `work/eval-harness-executable-posture`. Scope:
+Scanner completeness correction only. No image rebuild, no Harbor trial, smoke
+task, case adapter, grader, or comparison runner was run or built. The retained
+images remain unchanged from the review-correction build.
+
+**Files changed**
+
+Updated files under `evals/harbor/` only:
+
+- `scripts/scan_image.py` (root inspection, fail-closed internal traversal,
+  complete output protocol, full token redaction)
+- `scripts/test_scan_image.py` (27 deterministic tests, 13 new completeness
+  tests)
+- `README.md` (updated scanner description)
+- `posture.json` (superseded review-correction evidence with scanner-completeness
+  correction)
+
+**Acceptance-review finding reproduced and corrected**
+
+Independent acceptance review reproduced the scanner incompleteness: the
+review-correction scanner ran as the image-configured non-root user (`agent`),
+discarded `find` and `grep` diagnostics, and recorded `scan_command_failed=false`
+with `CLEAN` despite:
+
+```text
+configured user: agent
+find exit: 1 (unreadable image paths)
+grep exit: 2 (unreadable image paths)
+```
+
+The scanner-completeness correction fixes these issues:
+
+1. **Root inspection**: Added `--user 0:0` to the Docker run command for complete
+   filesystem inspection while preserving the image's configured non-root runtime
+   user. This is scanner privilege only; the image recipes and runtime posture
+   remain unchanged.
+2. **Fail-closed internal traversal**: Removed `2>/dev/null` diagnostic discarding.
+   The in-container script now explicitly monitors `find` and `grep` exit codes
+   and reports them in the output protocol (`FIND_EXIT`, `GREP_EXIT`). A `find`
+   exit > 0 or `grep` exit > 1 is an internal traversal failure that sets
+   `internal_traversal_failed` and `scan_command_failed`.
+3. **Complete output protocol**: The scanner validates that all required sections
+   (`FILES`, `CONTENT`, `IDENTITY`, `FIND_EXIT`, `GREP_EXIT`) are present and
+   well-formed. Missing or malformed sections set `protocol_error` and fail
+   closed.
+4. **Environment inspection**: Malformed JSON from `docker inspect` now raises a
+   structured error with a clear diagnostic message instead of being treated as
+   empty environment.
+5. **Full token redaction**: The complete synthetic canary token (including its
+   random suffix) is now fully redacted from diagnostics, not just the static
+   prefix.
+
+**Verification results**
+
+- `python3 evals/harbor/scripts/test_scan_image.py` → 27 tests pass (14 from
+  review-correction + 13 new completeness tests)
+- `python3 evals/harbor/scripts/test_posture.py` → 26 tests pass
+- `python3 evals/harbor/scripts/posture.py` → profile, envelope, and payload valid
+- `python3 evals/validate_skill_evals.py` → 2 suites valid
+- `./d7y validate` → evals + initiatives valid
+- `git diff --check` and `git status --short` → clean
+
+**Live Docker verification**
+
+- Agent image: `d7y-eval-phase0-agent:2.1.218` → `sha256:34b394a9…` (unchanged)
+- Verifier image: `d7y-eval-phase0-verifier:phase0` → `sha256:35b47fbb…` (unchanged)
+- Configured users: `agent` (uid 1000, non-root), `verifier` (uid 1001, non-root)
+- Scan results: both images `CLEAN` (`find_exit=0`, `grep_exit=0`, no protocol
+  errors, no internal traversal failures)
+- Synthetic-secret canary: `CLEAN` (secret did not leak, full token redacted)
+
+**Evidence reconciliation**
+
+- Previous incomplete live scan evidence is superseded by the corrected scanner
+  results
+- Retained images unchanged: no image rebuild required, exact digests confirmed
+- Scanner source commit: `f93c16f` (corrected scanner and tests)
+- Test count increased from 14 to 27 deterministic tests
+- No disposable canary resources remain (synthetic-secret image cleaned up)
+
+**Residual risk**
+
+The corrected scanner and binary checksum gate are strong but cannot
+exhaustively disprove unknown secret bytes, and a future rebuild with a
+different digest requires rescanning before use. The images remain unchanged;
+no new image-build risk was introduced. Static validation and corrected image
+scanning remain posture evidence, not a Harbor execution pass.
+
 ### Inputs required by Phase 1
 
 - Profile: `evals/harbor/profiles/claude-primary.json` (`claude-primary`).
