@@ -1,5 +1,5 @@
 ---
-status: draft
+status: committed
 plan: docs/plans/eval-execution-harness.md
 execution: phase-1-harbor-smoke
 executor: claude-code
