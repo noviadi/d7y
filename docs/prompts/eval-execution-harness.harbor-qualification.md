@@ -1,12 +1,16 @@
 ---
 title: Harbor Qualification for Skill Eval Foundation
 type: prompt
-status: draft
+status: superseded
 createdAt: 2026-07-30
 updatedAt: 2026-07-30
 ---
 
 # Harbor Qualification for Skill Eval Foundation
+
+> Superseded without execution by the phase-specific prompt sequence recorded
+> in `docs/plans/eval-execution-harness.md`. This prompt describes the rejected
+> provider-certification posture and must not be delegated.
 
 You are implementing the first Harbor qualification slice for D7Y's progressive skill-eval foundation.
 

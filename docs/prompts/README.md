@@ -36,7 +36,8 @@ Slugs are lowercase kebab-case. Filenames are stable identifiers; do not rename 
 A concrete prompt is immutable once execution begins.
 
 - Amp commits the concrete prompt **before** creating the task worktree and invoking the executor, so the executor always starts from the reviewed, committed text.
-- A concrete prompt must have frontmatter `status: committed` before delegation. Draft or ready prompts are review artifacts, not executable handoffs; the launcher rejects them.
+- A concrete prompt must have frontmatter `status: committed` before delegation. Draft or ready prompts are review artifacts, not executable handoffs; the launcher rejects them. `status: superseded` marks an unexecuted prompt replaced by a newer handoff and is also non-executable.
+- Do not edit an executed prompt to mark it superseded. Executed prompts remain immutable `committed` evidence; record their historical relationship in the governing plan or a later prompt.
 - The executor must not modify the concrete prompt after execution begins. Implementation feedback goes into the governing plan, not back into the prompt.
 - The launcher (`scripts/delegate-claude.sh`) rejects an untracked, uncommitted, or dirty prompt, and resolves the exact prompt commit to report.
 - A concrete prompt never embeds its own Git commit SHA, because a tracked file cannot contain the ID of the commit that contains it. The launcher resolves the execution base from task `HEAD` and records it in the runtime envelope instead.
