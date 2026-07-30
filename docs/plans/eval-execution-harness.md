@@ -149,7 +149,7 @@ The adapter should be deliberately small. It may construct Harbor task files, se
 
 Before migrating a real D7Y suite, prove these properties with a disposable synthetic task.
 
-The first qualification targets Harbor `0.20.0` and the local Docker provider. Use a pinned, non-global invocation such as `uvx --from harbor==0.20.0 harbor`; do not silently use a shared latest Harbor installation. Re-qualify if the Harbor version, Docker context, agent integration, provider, or Docker network controller changes. Use these initial fixed limits: setup 600 seconds, agent 600 seconds, verifier 120 seconds, 2 CPUs, 4096 MiB memory, and 10240 MiB storage. Record the Harbor version, Docker client and server versions, storage driver, cgroup/runtime posture, kernel/network prerequisites, image digests, and the exact task schema accepted by the pinned release. The storage mechanism is part of the provider identity and must be named, configured, and behaviorally tested with an over-limit task before qualification.
+The first qualification targets Harbor `0.20.0` and the local Docker provider. Use a pinned, non-global invocation such as `uvx --from harbor==0.20.0 harbor`; do not silently use a shared latest Harbor installation. Re-qualify if the Harbor version, Docker context, agent integration, provider, or Docker network controller changes. Use these initial fixed limits: environment build 600 seconds, agent setup 600 seconds, agent run 600 seconds, verifier 120 seconds, 2 CPUs, 4096 MiB memory, and 10240 MiB storage. Record the Harbor version, Docker client and server versions, storage driver, cgroup/runtime posture, kernel/network prerequisites, image digests, and the exact task schema accepted by the pinned release. The storage mechanism is part of the provider identity and must be named, configured, and behaviorally tested with an over-limit task before qualification.
 
 Qualification is split into two gates. Gate A is a Harbor foundation probe and qualification: task loading, explicit network policy, environment injection with a public non-secret sentinel, agent/verifier isolation, artifact transfer, and storage enforcement. Gate A may return a blocker until the assigned Docker daemon has the named quota mechanism. Gate B is a separately human-approved Claude/API-profile qualification that may use credentials only after its concrete profile is supplied. No executor may invent a production endpoint, authentication key, upstream model mapping, or proxy evidence mechanism.
 
@@ -180,11 +180,11 @@ of storage enforcement.
 
 ### Execution and evidence
 
-- The Harbor Claude Code integration can run non-interactively with a bounded timeout.
+- **Gate B:** The Harbor Claude Code integration can run non-interactively with a bounded timeout.
 - Agent stdout, stderr, exit status, tool activity, final response, and available usage data are retained.
 - A timeout or malformed agent result produces an explicit infrastructure error and preserves partial evidence.
 - Required artifact collection is verified by the separate verifier; Harbor's best-effort collection behavior must not turn missing evidence into success.
-- Invocation is either observed from a runtime-owned signal or explicitly marked unavailable.
+- **Gate B:** Invocation is either observed from a runtime-owned signal or explicitly marked unavailable; missing invocation evidence leaves the result `claude-outcome-only`, unqualified for invocation evaluation.
 
 ### Qualification outcome
 

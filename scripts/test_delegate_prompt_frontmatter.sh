@@ -34,9 +34,17 @@ write_prompt() {
 }
 
 write_prompt test.valid.md 'status: committed'
+printf '%s\n' '---' 'body horizontal rule' >> "$fixture_root/docs/prompts/test.valid.md"
 write_prompt test.draft.md 'status: draft'
+write_prompt test.ready.md 'status: ready'
 write_prompt test.missing.md 'plan: docs/plans/test.md'
 write_prompt test.duplicate.md 'status: committed' 'status: draft'
+{
+  printf '%s\n' 'status: committed' '---' '# missing opening delimiter'
+} > "$fixture_root/docs/prompts/test.no-opening.md"
+{
+  printf '%s\n' '---' 'not a field' '---' '# invalid field'
+} > "$fixture_root/docs/prompts/test.invalid-field.md"
 {
   printf '%s\n' '---' 'status: committed'
   printf '%s\n' '# missing closing delimiter'
@@ -54,7 +62,7 @@ run_launcher() {
 
 run_launcher test.valid.md >/dev/null 2>&1
 
-for invalid_prompt in test.draft.md test.missing.md test.duplicate.md test.malformed.md; do
+for invalid_prompt in test.draft.md test.ready.md test.missing.md test.duplicate.md test.no-opening.md test.invalid-field.md test.malformed.md; do
   if run_launcher "$invalid_prompt" >/dev/null 2>&1; then
     printf 'expected rejection for %s\n' "$invalid_prompt" >&2
     exit 1

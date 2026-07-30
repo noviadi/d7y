@@ -383,12 +383,12 @@ lines = sys.stdin.read().splitlines()
 if not lines or lines[0] != "---":
     raise SystemExit("malformed frontmatter: missing opening delimiter")
 
-closing = [index for index, line in enumerate(lines[1:], start=1) if line == "---"]
-if len(closing) != 1:
-    raise SystemExit("malformed frontmatter: expected exactly one closing delimiter")
+closing = next((index for index, line in enumerate(lines[1:], start=1) if line == "---"), None)
+if closing is None:
+    raise SystemExit("malformed frontmatter: missing closing delimiter")
 
 fields = {}
-for number, line in enumerate(lines[1:closing[0]], start=2):
+for number, line in enumerate(lines[1:closing], start=2):
     if not line.strip():
         continue
     match = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_-]*):[ \t]*(.*)", line)
