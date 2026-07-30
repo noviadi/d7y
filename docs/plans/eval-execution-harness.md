@@ -441,6 +441,9 @@ predecessor evidence or repair an earlier phase silently.
 
 ### Phase 0 — Establish the executable posture
 
+**Status:** complete and accepted on 2026-07-30. This closes only Phase 0; the
+multi-phase plan remains `todo` while Phases 1–5 are outstanding.
+
 Freeze the historical `work/eval-execution-harness` host-wrapper branch. Do not
 reuse its process runner or configuration parser.
 
@@ -768,8 +771,11 @@ model/provider remain `unavailable` until runtime evidence exists.
 
 Pre-build source commit: `39fab1b` (the corrected executable inputs: fail-closed
 scanner, enforced binary checksum, identity-state removal, duplicate-source
-rejection, and tests). Both images were rebuilt `--no-cache` from that commit:
-agent `sha256:34b394a9…`, verifier `sha256:35b47fbb…`.
+rejection, and tests). This is the historical commit from which the retained
+images were actually built; its content-equivalent commit after the task branch
+was rebased is `6258866`. The images were not rebuilt merely to replace the
+commit identity. Both images were rebuilt `--no-cache` from `39fab1b`: agent
+`sha256:34b394a9…`, verifier `sha256:35b47fbb…`.
 
 ### Reproducibility
 
@@ -903,8 +909,13 @@ construction remain posture evidence, not a Harbor execution pass.
 
 ### Phase 0 scanner-completeness correction
 
-Executor: Claude Code. Branch: `work/eval-harness-executable-posture`. Scope:
-Scanner completeness correction only. No image rebuild, no Harbor trial, smoke
+Initial executor: Claude Code. Acceptance review and final bounded correction:
+Codex fallback on `work/eval-harness-executable-posture`. The first correction
+run stalled cleanly; the second resolved the requested `sonnet` alias through
+the configured endpoint to `glm-4.7` and committed work that contradicted the
+explicit no-pipeline and strict-protocol requirements. After rejecting that
+result, the reviewer used the repository constitution's visible fallback path.
+Scope remained scanner completeness only. No image rebuild, Harbor trial, smoke
 task, case adapter, grader, or comparison runner was run or built. The retained
 images remain unchanged from the review-correction build.
 
@@ -914,8 +925,7 @@ Updated files under `evals/harbor/` only:
 
 - `scripts/scan_image.py` (root inspection, fail-closed internal traversal,
   complete output protocol, full token redaction)
-- `scripts/test_scan_image.py` (27 deterministic tests, 13 new completeness
-  tests)
+- `scripts/test_scan_image.py` (28 deterministic daemon-free tests)
 - `README.md` (updated scanner description)
 - `posture.json` (superseded review-correction evidence with scanner-completeness
   correction)
@@ -939,26 +949,24 @@ The scanner-completeness correction fixes these issues:
    filesystem inspection while preserving the image's configured non-root runtime
    user. This is scanner privilege only; the image recipes and runtime posture
    remain unchanged.
-2. **Fail-closed internal traversal**: Removed `2>/dev/null` diagnostic discarding.
-   The in-container script now explicitly monitors `find` and `grep` exit codes
-   and reports them in the output protocol (`FIND_EXIT`, `GREP_EXIT`). A `find`
-   exit > 0 or `grep` exit > 1 is an internal traversal failure that sets
-   `internal_traversal_failed` and `scan_command_failed`.
-3. **Complete output protocol**: The scanner validates that all required sections
-   (`FILES`, `CONTENT`, `IDENTITY`, `FIND_EXIT`, `GREP_EXIT`) are present and
-   well-formed. Missing or malformed sections set `protocol_error` and fail
-   closed.
-4. **Environment inspection**: Malformed JSON from `docker inspect` now raises a
-   structured error with a clear diagnostic message instead of being treated as
-   empty environment.
-5. **Full token redaction**: The complete synthetic canary token (including its
-   random suffix) is now fully redacted from diagnostics, not just the static
-   prefix.
+2. **Fail-closed internal traversal**: `find` and `grep` write to separate
+   temporary files and their statuses are captured directly. No pipeline
+   supplies evidence, and bounded failure diagnostics are retained. `find`
+   exit > 0 or `grep` exit > 1 is a command failure; grep exit 1 is a valid
+   no-match.
+3. **Complete output protocol**: The parser requires ordered, exactly-once
+   `FILES`, `CONTENT`, `IDENTITY`, `FIND_EXIT`, and `GREP_EXIT` sections.
+   Missing, duplicate, out-of-order, or invalid values fail closed.
+4. **Environment inspection**: Command failure, malformed JSON, and invalid
+   JSON shape become structured failures. Secret-bearing findings report key
+   names without values.
+5. **Full token redaction**: The complete synthetic canary token, including its
+   random suffix, is absent from returned reports and diagnostics; no
+   token-derived prefix is retained.
 
 **Verification results**
 
-- `python3 evals/harbor/scripts/test_scan_image.py` → 27 tests pass (14 from
-  review-correction + 13 new completeness tests)
+- `python3 evals/harbor/scripts/test_scan_image.py` → 28 daemon-free tests pass
 - `python3 evals/harbor/scripts/test_posture.py` → 26 tests pass
 - `python3 evals/harbor/scripts/posture.py` → profile, envelope, and payload valid
 - `python3 evals/validate_skill_evals.py` → 2 suites valid
@@ -970,8 +978,8 @@ The scanner-completeness correction fixes these issues:
 - Agent image: `d7y-eval-phase0-agent:2.1.218` → `sha256:34b394a9…` (unchanged)
 - Verifier image: `d7y-eval-phase0-verifier:phase0` → `sha256:35b47fbb…` (unchanged)
 - Configured users: `agent` (uid 1000, non-root), `verifier` (uid 1001, non-root)
-- Scan results: both images `CLEAN` (`find_exit=0`, `grep_exit=0`, no protocol
-  errors, no internal traversal failures)
+- Scan results: both images `CLEAN` (`find_exit=0`, `grep_exit=1` valid
+  no-match, no protocol errors, no internal traversal failures)
 - Synthetic-secret canary: `CLEAN` (secret did not leak, full token redacted)
 
 **Evidence reconciliation**
@@ -979,8 +987,10 @@ The scanner-completeness correction fixes these issues:
 - Previous incomplete live scan evidence is superseded by the corrected scanner
   results
 - Retained images unchanged: no image rebuild required, exact digests confirmed
-- Scanner source commit: `f93c16f` (corrected scanner and tests)
-- Test count increased from 14 to 27 deterministic tests
+- Claude commit `f93c16f` rejected: it retained a status-masking grep pipeline
+  and permissive tests despite the immutable prompt.
+- Accepted scanner source commit: `46d4592` (visible Codex fallback).
+- Test count increased from 14 to 28 deterministic daemon-free tests.
 - No disposable canary resources remain (synthetic-secret image cleaned up)
 
 **Residual risk**

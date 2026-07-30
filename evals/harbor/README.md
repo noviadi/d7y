@@ -86,7 +86,7 @@ docker build -t d7y-eval-phase0-verifier:phase0 -f evals/harbor/images/verifier/
 ```sh
 python3 evals/harbor/scripts/posture.py             # validate profile, envelope, payload + digests
 python3 evals/harbor/scripts/test_posture.py        # focused parser/digest tests (26)
-python3 evals/harbor/scripts/test_scan_image.py     # scanner fail-closed tests (14), no Docker daemon
+python3 evals/harbor/scripts/test_scan_image.py     # scanner fail-closed tests (28), no Docker daemon
 python3 evals/harbor/scripts/scan_image.py --canary # image canary + synthetic-secret scan (fails closed)
 ```
 
@@ -98,11 +98,12 @@ daemon, or Docker exit code such as 125 can never become absence evidence.
 The scanner runs as root (`--user 0:0`) for complete filesystem inspection while
 preserving the image's configured non-root runtime user. Internal `find` and `grep`
 traversals are monitored for exit codes: `find` exit > 0 indicates unreadable
-paths, while `grep` exit 1 means no matches (valid) and exit > 1 indicates command
-failure. The output protocol requires well-formed `FILES`, `CONTENT`, `IDENTITY`,
-`FIND_EXIT`, and `GREP_EXIT` sections; missing or malformed sections are protocol
-errors that fail closed. The synthetic canary token is fully redacted from
-diagnostics.
+paths, while `grep` exit 1 means no matches (valid) and exit > 1 indicates
+command failure. The output protocol requires ordered, exactly-once `FILES`,
+`CONTENT`, `IDENTITY`, `FIND_EXIT`, and `GREP_EXIT` sections; missing,
+duplicate, out-of-order, or invalid sections are protocol errors that fail
+closed. Secret-bearing environment findings report key names only, and the
+synthetic canary token is fully redacted from reports and diagnostics.
 
 ## Reproducibility
 

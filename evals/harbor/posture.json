@@ -5,6 +5,7 @@
   "plan": "docs/plans/eval-execution-harness.md",
   "recorded_at": "2026-07-30",
   "pre_build_source_commit": "39fab1b",
+  "rebased_content_equivalent_commit": "6258866",
   "summary": "Phase 0 establishes the executable posture only. No Harbor trial, smoke task, case adapter, grader, or comparison runner was run or built. This record supersedes the review-correction build with the scanner-completeness correction (root filesystem inspection, fail-closed internal traversal monitoring, complete output protocol validation, full synthetic token redaction, extended deterministic tests).",
   "environment": {
     "python": "3.14.6",
@@ -134,11 +135,11 @@
   "canary_scan": {
     "scanner": "evals/harbor/scripts/scan_image.py",
     "scanner_contract": "fails closed: a failed scan, canary build, canary scan, or cleanup is reported as a distinct command failure with redacted diagnostics and a non-zero exit, never CLEAN. Runs as root (--user 0:0) for complete filesystem inspection while preserving the image's configured non-root runtime user. Internal find/grep traversals are monitored (find exit > 0 or grep exit > 1 is failure). Output protocol requires complete FILES, CONTENT, IDENTITY, FIND_EXIT, GREP_EXIT sections. Synthetic token fully redacted.",
-    "agent_image": "clean (no forbidden files, content, secret env, or installer identity state; identity_state_present=false; find_exit=0, grep_exit=0; no internal traversal failures)",
-    "verifier_image": "clean (no forbidden files, content, secret env; find_exit=0, grep_exit=0; no internal traversal failures)",
+    "agent_image": "clean (no forbidden files, content, secret env, or installer identity state; identity_state_present=false; find_exit=0, grep_exit=1 [valid no-match]; no internal traversal failures)",
+    "verifier_image": "clean (no forbidden files, content, secret env; find_exit=0, grep_exit=1 [valid no-match]; no internal traversal failures)",
     "synthetic_secret_canary": "clean (secret supplied as build-arg and context file did not leak into the image; full token redacted from diagnostics)",
     "identity_state_absent": "the retained agent image contains no /home/agent/.claude directory and no /home/agent/.claude.json; the installer-generated machineID/userID and config backups are removed after the build-time version checks. The scanner's IDENTITY probe reports absent for both images.",
-    "scanner_tests": "27 deterministic tests (14 from review-correction + 13 new completeness tests covering root inspection, internal traversal failures, protocol validation, environment inspection failures, and full token redaction)",
+    "scanner_tests": "28 deterministic daemon-free tests covering root inspection, unmasked traversal status, exact protocol validation, environment inspection failures and shape, secret-value omission, temporary-directory cleanup, and full token redaction",
     "supersedes": "the incomplete scanner from phase-0-review-corrections that ran as the image-configured non-root user and did not detect internal traversal failures",
     "independent_review_reproduced": "the independent acceptance review reproduced the incompleteness: configured user agent, find exit 1 (unreadable paths), grep exit 2 (unreadable paths), yet recorded scan_command_failed=false and CLEAN",
     "limitation": "A filesystem scan proves the searched-for forbidden material and named secret bytes are absent; it cannot exhaustively disprove unknown secret bytes without reading every byte of the image."
@@ -194,14 +195,15 @@
     "prompt": "docs/prompts/eval-execution-harness.phase-0-scanner-completeness.md",
     "items": [
       "scan_image.py now runs as root (--user 0:0) for complete filesystem inspection while preserving the image's configured non-root runtime user (scanner privilege only; image recipes unchanged)",
-      "scan_image.py makes in-container traversal fail closed: monitors find and grep exit codes, reports find exit > 0 or grep exit > 1 as internal_traversal_failed, no longer discards diagnostics with 2>/dev/null",
-      "scan_image.py requires complete well-formed output protocol: validates FILES, CONTENT, IDENTITY, FIND_EXIT, GREP_EXIT sections are present; missing or malformed sections set protocol_error and fail closed",
-      "scan_image.py keeps environment inspection fail closed: handles malformed docker inspect JSON with explicit error message, never treats malformed output as empty env",
-      "scan_image.py fully redacts the synthetic canary token: the complete token (including random suffix) is redacted from diagnostics, not just the static prefix",
-      "deterministic tests extended from 14 to 27 tests covering root inspection verification, internal traversal failures, protocol validation, environment inspection failures, dirty/clean distinguishability, and full token redaction",
+      "scan_image.py makes in-container traversal fail closed: find and grep write to separate temporary files, their statuses are captured directly with no evidence-producing pipeline, and bounded failure diagnostics are retained",
+      "scan_image.py requires an ordered exactly-once protocol: missing, duplicate, out-of-order, or invalid FILES, CONTENT, IDENTITY, FIND_EXIT, or GREP_EXIT sections fail closed",
+      "scan_image.py keeps environment inspection fail closed for command failure, malformed JSON, and invalid JSON shape; secret-bearing findings report environment key names without values",
+      "scan_image.py fully redacts the synthetic canary token, including its random suffix, and no longer reports a token-derived prefix",
+      "28 deterministic tests require no Docker daemon and cover root invocation, unmasked traversal status, strict protocol parsing, environment failure and shape, dirty/clean classification, canary failures, token absence, and temporary-directory cleanup",
       "previous incomplete live scan evidence is superseded: the review-correction scanner reported CLEAN despite running as non-root user agent with find exit 1 and grep exit 2; independent review reproduced this incompleteness",
       "retained images unchanged: agent sha256:34b394a9…, verifier sha256:35b47fbb…; no image rebuild required",
-      "scanner source commit: f93c16f (corrected scanner and tests)"
+      "Claude correction commit f93c16f was rejected in acceptance review because it retained a status-masking grep pipeline and permissive protocol tests",
+      "accepted scanner source commit: 46d4592 (Codex fallback after repeated Claude executor drift)"
     ]
   },
   "verification": {
@@ -211,12 +213,12 @@
     "container_claude_version": "2.1.218 (Claude Code); installed binary sha256 e12071751a… verified in-container, no model call (pass)",
     "image_inspection": "non-root users, no volumes/mounts, clean env key names, digest-pinned base; agent /home/agent/.claude and /home/agent/.claude.json absent (pass)",
     "dockerfile_inspection": "no COPY/ADD/secret mounts; pinned base, pinned version, enforced binary checksum, identity state removed after version checks (pass)",
-    "canary_scan": "agent and verifier CLEAN; synthetic-secret canary CLEAN; scanner fail-closed contract covered by 27 deterministic tests (pass)",
-    "scanner_completeness": "root inspection (--user 0:0) verified, internal traversal failures detected (find_exit=0, grep_exit=0), complete protocol validated (FILES, CONTENT, IDENTITY, FIND_EXIT, GREP_EXIT present), environment inspection fails closed on malformed JSON, full token redaction verified (pass)",
+    "canary_scan": "agent and verifier CLEAN; synthetic-secret canary CLEAN; scanner fail-closed contract covered by 28 deterministic daemon-free tests (pass)",
+    "scanner_completeness": "root inspection (--user 0:0) verified, evidence commands have directly captured statuses with no masking pipeline, live find_exit=0 and grep_exit=1 (valid no-match), ordered exactly-once protocol validated, environment inspection fails closed without echoing values, full token redaction verified (pass)",
     "binary_checksum_gate": "build step sha256sum -c on the resolved installed binary printed '<...>/2.1.218: OK' against the recorded sha256 (pass)",
     "posture_validator": "evals/harbor/scripts/posture.py (pass)",
     "posture_tests": "26 tests pass, incl. duplicate-source rejection (pass)",
-    "scanner_tests": "evals/harbor/scripts/test_scan_image.py → 27 tests pass, incl. root inspection, internal traversal failures, protocol validation, environment failures, and full token redaction (pass)",
+    "scanner_tests": "evals/harbor/scripts/test_scan_image.py → 28 tests pass without Docker, incl. root invocation, direct traversal status, strict protocol validation, environment shape/value handling, fixture cleanup, and full token redaction (pass)",
     "validate_skill_evals": "2 suites valid (pass)",
     "d7y_validate": "evals + initiatives valid (pass)",
     "git_diff_check_and_status": "clean (pass)"
