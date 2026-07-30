@@ -40,7 +40,7 @@ The relevant paper insight is that skill contribution should be estimated throug
 
 Use Harbor's task, environment, agent, trial, artifact, and verifier concepts where they reduce bespoke infrastructure. Do not make Harbor's numeric reward file, task layout, or agent adapter the canonical D7Y eval schema.
 
-Harbor's local Docker environment is the first capability-probe target. A remote provider or external Docker quota is required for foundation qualification if local Docker cannot enforce storage; it is a later explicitly named qualification target, not an implied portability claim.
+Harbor's local Docker environment remains the first qualified-provider target. The assigned Docker daemon must be configured with an independently verified storage quota mechanism, such as overlay2 on XFS project quotas with a tested per-container `storage_mb` ceiling. No such mechanism is currently assigned in this repository; until one is supplied and verified, the daemon is only a capability-probe target and cannot qualify. A different provider is a separately scoped qualification, not an implied substitute.
 
 ### Containers replace host-side isolation claims
 
@@ -64,7 +64,7 @@ same task, image, prompt, model, tools, permissions, resources, and network
 └── treatment: target skill at an immutable content revision
 ```
 
-Use Harbor's skill injection and require both the skill content digest and resolved source commit in the run manifest. Stop if either provenance value cannot be recorded. Do not inject D7Y expected outcomes, process instructions, grader details, or target-specific commands into the agent prompt merely to make grading easier.
+Use Harbor's skill injection and require both the Harbor content digest and the D7Y source commit in the run manifest. Local skill paths do not receive Git provenance automatically, so commit the exact skill/task inputs before behavioral execution, verify their bytes match that commit, and record the D7Y commit separately from Harbor's digest. Stop if either provenance value cannot be recorded. Do not inject D7Y expected outcomes, process instructions, grader details, or target-specific commands into the agent prompt merely to make grading easier.
 
 ### Invocation remains a separate evidence question
 
@@ -89,7 +89,7 @@ Missing telemetry is `unavailable`, not zero. A failed baseline outcome does not
 ### In scope for the foundation
 
 - Harbor as the first execution substrate.
-- Local Docker as the first qualified provider.
+- Local Docker as the first qualified provider, conditional on an independently verified storage quota mechanism.
 - One Harbor task template for synthetic D7Y skill cases.
 - One positive and one negative `starting-initiatives` case, migrated only after the synthetic task works.
 - Baseline and treatment trials generated from the same immutable case inputs.
@@ -149,9 +149,9 @@ The adapter should be deliberately small. It may construct Harbor task files, se
 
 Before migrating a real D7Y suite, prove these properties with a disposable synthetic task.
 
-The first qualification targets Harbor `0.20.0` and the local Docker provider. Use a pinned, non-global invocation such as `uvx --from harbor==0.20.0 harbor`; do not silently use a shared latest Harbor installation. Re-qualify if the Harbor version, Docker context, agent integration, provider, or Docker network controller changes. Use these initial fixed limits: setup 600 seconds, agent 600 seconds, verifier 120 seconds, 2 CPUs, 4096 MiB memory, and 10240 MiB storage. Record the Harbor version, Docker client and server versions, storage driver, cgroup/runtime posture, kernel/network prerequisites, image digests, and the exact task schema accepted by the pinned release.
+The first qualification targets Harbor `0.20.0` and the local Docker provider. Use a pinned, non-global invocation such as `uvx --from harbor==0.20.0 harbor`; do not silently use a shared latest Harbor installation. Re-qualify if the Harbor version, Docker context, agent integration, provider, or Docker network controller changes. Use these initial fixed limits: setup 600 seconds, agent 600 seconds, verifier 120 seconds, 2 CPUs, 4096 MiB memory, and 10240 MiB storage. Record the Harbor version, Docker client and server versions, storage driver, cgroup/runtime posture, kernel/network prerequisites, image digests, and the exact task schema accepted by the pinned release. The storage mechanism is part of the provider identity and must be named, configured, and behaviorally tested with an over-limit task before qualification.
 
-Qualification is split into two gates. Gate A is a Harbor foundation capability probe: task loading, explicit network policy, environment injection with a non-secret sentinel, agent/verifier isolation, artifact transfer, and storage enforcement. On the current local Docker provider, storage enforcement is expected to be unavailable; until an enforceable external Docker quota or provider is named, Gate A can only record a blocker and cannot qualify. Gate B is a separately human-approved Claude/API-profile qualification that may use credentials only after its concrete profile is supplied. No executor may invent a production endpoint, authentication key, upstream model mapping, or proxy evidence mechanism.
+Qualification is split into two gates. Gate A is a Harbor foundation probe and qualification: task loading, explicit network policy, environment injection with a public non-secret sentinel, agent/verifier isolation, artifact transfer, and storage enforcement. Gate A may return a blocker until the assigned Docker daemon has the named quota mechanism. Gate B is a separately human-approved Claude/API-profile qualification that may use credentials only after its concrete profile is supplied. No executor may invent a production endpoint, authentication key, upstream model mapping, or proxy evidence mechanism.
 
 The committed runtime payload for the first D7Y case is exactly: `SKILL.md`, `initiatives/README.md`, `d7y`, and `scripts/check-initiatives.py`, plus the case-declared fixture files. `scripts/check-initiatives.py` is a public D7Y capability checker, not the private eval grader. The agent image must not contain the source checkout, eval definitions, expected outcomes, assertions, private grading wrappers, benchmark summaries, or harness control files. The verifier image may contain private assertions, checker/grader wrappers, and expected outcomes and receives only declared outputs and evidence.
 
@@ -165,11 +165,16 @@ The committed runtime payload for the first D7Y case is exactly: `SKILL.md`, `in
 - The verifier is a separate environment, contains its private checker, and receives only declared artifacts and evidence.
 - The container is discarded or reset between baseline and treatment.
 
+Gate A must run an over-limit storage test that attempts to exceed the declared
+ceiling and observes a deterministic write failure or provider-enforced limit. A
+stored `storage_mb` value, provider label, or successful task load is not evidence
+of storage enforcement.
+
 ### Treatment
 
 - The baseline has no target skill content.
 - The treatment has exactly the target skill content with both a recorded content digest and resolved source commit.
-- Eval definitions, expected outcomes, assertions, grader source, and harness controls are absent from both agent environments, while private grading material is present only in the verifier environment.
+- Eval definitions, expected outcomes, assertions, private grader source, and harness controls are absent from both agent environments, while private grading material is present only in the verifier environment.
 - A suppression canary proves that an untrusted or unintended global skill/instruction is not silently influencing the trial, where the Harbor agent integration exposes such state.
 - A failed treatment-boundary check invalidates the pair before outcome interpretation.
 
@@ -186,16 +191,16 @@ The committed runtime payload for the first D7Y case is exactly: `SKILL.md`, `in
 Gate A outcomes are:
 
 - `foundation-qualified` — Harbor task, network, storage, verifier, artifact, and secret-canary controls passed;
-- `foundation-blocked` — a required provider capability, such as Docker storage enforcement, is unavailable and must be supplied before qualification;
+- `foundation-blocked` — the assigned provider lacks the named storage quota or another required capability and must be configured before qualification;
 - `foundation-not-qualified` — the environment, treatment boundary, or evidence contract cannot be trusted.
 
 Gate B outcomes are:
 
 - `claude-qualified` — the approved Claude/API profile, execution, route evidence, and required observability passed;
-- `claude-qualified-with-bounded-evidence` — execution and scoped outcome evidence work, but invocation or another explicitly non-required signal is unavailable;
+- `claude-outcome-only` — scoped execution and outcome evidence work, but invocation evidence is unavailable; this is explicitly unqualified for invocation evaluation;
 - `claude-not-qualified` — Claude execution, route, treatment, or evidence cannot be trusted.
 
-Only `claude-qualified` supports the full D7Y invocation contract. No qualification outcome promotes a skill or establishes stable improvement.
+Gate B requires `foundation-qualified` from the same provider, image digests, resource controls, mounts, and effective network posture. Any change to those conditions requires the affected foundation probes to run again. Only `claude-qualified` supports the full D7Y invocation contract. No qualification outcome promotes a skill or establishes stable improvement. These gate outcomes are plan-local provisional statuses, not canonical product result values.
 
 ## Claude configuration and API boundary
 
@@ -227,7 +232,7 @@ minimum, the adapter must classify routing and credential variables such as
 then either pin them explicitly or reject them before startup. This classification
 must be version-tested rather than inferred from a successful final response.
 
-Harbor task configuration may reference runtime environment values, but must not contain secret values. The task must set explicit network policy for setup, agent, and verifier. The agent may reach only the declared API endpoint or proxy. The verifier must not receive agent credentials or API configuration unless a specific check requires a redacted configuration identity.
+Reserve Harbor task `[environment].env` for Gate A's public interpolation sentinel and other non-secret values. Never place a real credential or credential reference there: task environment values persist in the container environment and are not the Gate B secret boundary. For Gate B, pass credentials only through Harbor trial-scoped `[agent].env` using a D7Y allowlist of key names, and ensure verifier configuration has no agent credentials. The task must set explicit setup, agent, and verifier network policies. Setup may use a separately allowlisted package-install host; runtime may reach only the approved API endpoint or proxy. The verifier must not receive agent credentials or API configuration unless a specific check requires a redacted configuration identity.
 
 Represent the route as a named, versioned API profile resolved when the Harbor task is built. At minimum it contains:
 
@@ -238,15 +243,15 @@ Represent the route as a named, versioned API profile resolved when the Harbor t
 - exact Harbor allowed hosts and network mode;
 - redacted configuration digest and proxy image/configuration digest.
 
-For a direct endpoint or external proxy, the generated task passes the endpoint and
-credential references through Harbor's approved environment interpolation and
-allowlists the exact host. Harbor documents `${HOST_VAR}` interpolation in
-`environment.env`; Gate A verifies interpolation with a non-secret sentinel, while
-Gate B verifies the human-supplied profile without recording its secret. The proxy
-must emit a redacted request record (route, requested model, upstream status, and
-correlation ID) through an independently controlled endpoint log or declared
-artifact. This proves routing without exposing the API credential or relying on
-Claude's final response.
+For the external proxy topology, the generated task keeps the proxy endpoint and
+non-secret profile metadata in task configuration, and passes the credential only
+through trial-scoped `agent.env` at execution time. Harbor's `${HOST_VAR}`
+interpolation in `environment.env` is tested only with Gate A's public sentinel.
+Gate B's sensitive-looking canary is agent-scoped and must be checked after
+finalization. The proxy must emit a redacted request record (route, requested model,
+upstream status, and correlation ID) through an independently controlled endpoint
+log or declared artifact. This proves routing without exposing the API credential or
+relying on Claude's final response.
 
 Harbor's Docker Compose support can add a proxy service, and the `main` agent
 container can reach it by service name. However, Compose services share the task
@@ -260,7 +265,7 @@ before separate-verifier teardown.
 
 Support API topologies progressively:
 
-- **Foundation — external proxy/custom endpoint:** the agent reaches an approved HTTPS endpoint through an exact Harbor allowlist; the proxy handles upstream authentication and any model translation. This is the first topology to qualify because Harbor directly supports the endpoint allowlist and task environment injection.
+- **Foundation — external proxy:** the agent reaches an approved HTTPS proxy through an exact Harbor runtime allowlist; the proxy handles upstream authentication and any model translation. This is the first Gate B topology. Direct official Anthropic routing is deferred until an independent route-evidence mechanism is defined and qualified.
 - **Follow-on — Docker Compose sidecar:** a Compose sidecar receives agent requests on an internal service name. Sidecar configuration and upstream identity are hashed and recorded, credentials remain runtime-only, and direct agent-to-upstream access must be tested separately. This topology is Docker-specific; Harbor documents that many cloud providers do not support Compose environments.
 
 The first Gate B credentialed qualification must prove the external proxy/custom endpoint topology with a harmless request and a known response. It must record the API profile, route identity, proxy request record, requested model, effective model/provider when available, and authentication key names. It must fail with `evidence_error` or `agent_error` when the route cannot be established, and with `pair_error` when baseline and treatment receive different API profiles. Effective model/provider is useful provenance, but route evidence comes from the proxy or endpoint boundary, not from the final response.
@@ -271,17 +276,17 @@ The first Gate B credentialed qualification must prove the external proxy/custom
 
 Treat the current Claude wrapper branch as a frozen historical attempt. Do not repair or extend its host-side isolation model in this plan.
 
-Record the pinned Harbor version and invocation, Python version, Docker client and daemon versions, storage driver, cgroup/runtime and kernel/network prerequisites, selected image digests, selected agent integration, API-profile status, injection mechanism, network policies, resource limits, and the exact runtime payload. Keep secrets out of plans, task files, and artifacts. The current environment has Docker client `29.6.2` but no permitted Docker daemon access; this is a preflight blocker until daemon access is granted or another explicitly qualified provider is selected. Do not install Harbor into shared user tooling as an unrecorded side effect.
+Record the pinned Harbor version and invocation, Python version, Docker client and daemon versions, storage driver and quota mechanism, cgroup/runtime and kernel/network prerequisites, selected image digests, selected agent integration, API-profile status, injection mechanism, network policies, resource limits, and the exact runtime payload. Probe Docker access under the exact assigned executor/launcher posture rather than relying on a sandbox-specific observation. Keep secrets out of plans, task files, and artifacts. Do not install Harbor into shared user tooling as an unrecorded side effect.
 
 **Exit evidence:** a committed implementation prompt can point at this plan, the main branch is the source base, and the chosen Harbor/Docker posture is reproducible by a developer.
 
 ### Phase 0A — Probe Harbor without Claude credentials
 
-Build and run a disposable task using Harbor `0.20.0` and local Docker only. Use a no-op or deterministic test agent for the foundation probe; do not require Harbor-trial Claude authentication. Prove the exact `task.toml` fields used by this plan: environment and phase network policies, `environment.env` interpolation with a non-secret sentinel, separate verifier configuration, declared artifacts, and the selected resource controls. Test storage enforcement explicitly. If Docker reports storage without enforcing it, record `environment_error` as a foundation blocker; do not call the probe qualified. Run positive and deliberately broken variants and classify each failure.
+Build and run a disposable task using Harbor `0.20.0` and local Docker only. Use Harbor's built-in Oracle with a synthetic solution script for active read, write, environment, network, timeout, and artifact probes; use a no-op only for deliberately absent-action or missing-artifact controls. Do not require Harbor-trial Claude authentication. Prove the exact `task.toml` fields used by this plan: environment and phase network policies, `environment.env` interpolation with a public non-secret sentinel, separate verifier configuration, declared artifacts, and the selected resource controls. Test storage enforcement explicitly with an over-limit write. If Docker reports storage without enforcing it, record `environment_error` as a foundation blocker; do not call the probe qualified. Run positive and deliberately broken variants and classify each failure.
 
-Add a deterministic secret-canary check: inject a known synthetic sentinel only for the foundation probe, scan task files, manifests, logs, and collected artifacts for the sentinel, and fail closed if it appears where it should not. This verifies redaction and collection behavior without using a real credential.
+Add two deterministic canaries. Gate A injects a public interpolation sentinel through `environment.env`. Gate B, only after human approval, injects a sensitive-looking canary through trial-scoped `agent.env` using the D7Y key allowlist. After Harbor finalization, scan task files, manifests, logs, and collected artifacts byte-for-byte; permit only an approved redacted marker or digest representation. If raw sensitive bytes appear, quarantine the result, delete the raw-secret-bearing artifacts, and report `evidence_error`; never publish or grade the trial. Account for binary/unreadable files by failing closed when they cannot be scanned.
 
-**Exit evidence:** a Harbor `0.20.0` capability record, valid task fixtures, positive and negative results, separate-verifier evidence, and a clean secret-canary report. The result is `foundation-qualified` only when storage and network boundaries are enforced. Otherwise return `foundation-blocked` with the missing external quota/provider named; never report a successful foundation qualification.
+**Exit evidence:** a Harbor `0.20.0` capability record, valid task fixtures, positive and negative results, separate-verifier evidence, a behavioral storage-boundary result, and a clean canary report. The result is `foundation-qualified` only when storage and network boundaries are enforced. Otherwise return `foundation-blocked` with the missing quota mechanism named; never report a successful foundation qualification.
 
 ### Phase 1 — Prove Harbor isolation with a disposable task
 
@@ -318,13 +323,13 @@ The marker is a qualification probe, not an outcome score.
 
 ### Phase 2A — Supply and approve the Claude/API profile
 
-Before any credentialed run, a human supplies and approves a concrete API profile containing the non-secret endpoint hostname, route kind, exact Harbor allowlist, authentication key name, upstream provider/model mapping, proxy configuration digest, route-evidence source, exact Claude Code version, and secret injection mechanism. The profile is committed as non-secret configuration or recorded in the execution envelope; its values are never invented by the executor. Direct Anthropic routing is acceptable only if the selected endpoint and authentication mechanism are explicitly supplied and route evidence is defined.
+Before any credentialed run, a human supplies and approves a concrete external-proxy API profile containing the non-secret proxy hostname, exact Harbor setup/runtime allowlists, authentication key name, upstream provider/model mapping, proxy configuration digest, route-evidence source, exact Claude Code version, exact digest-pinned agent image, and trial-scoped secret injection mechanism. The profile is committed as non-secret configuration or recorded in the execution envelope; its values are never invented by the executor. Direct official Anthropic routing is outside the first Gate B until independent route evidence is defined and qualified.
 
 **Exit evidence:** an approved profile and a credential injection procedure that does not write secrets to the repository, task files, logs, or artifacts.
 
 ### Phase 3 — Qualify Claude Code through Harbor
 
-Run the synthetic positive and negative prompts with Harbor's Claude Code integration and the approved API profile. Pin and record the exact Claude Code agent version; do not accept Harbor's default installer result as reproducible. Use Harbor's native Claude controls for permission mode, tools, MCP, skills, model, and environment inputs. If a settings file is necessary, implement a small custom adapter only after recording the native-control gap and qualifying that adapter separately. Determine which evidence is genuinely available from Harbor and the integration rather than assumed from the old wrapper:
+Run the synthetic positive and negative prompts with Harbor's Claude Code integration and the approved external-proxy profile. Pin and record the exact Claude Code agent version and use a digest-pinned agent image containing that version; do not accept Harbor's default installer result as reproducible. If installation is required, give setup its own explicit package/download allowlist distinct from the runtime API allowlist. Use Harbor's native Claude controls for permission mode, tools, MCP, skills, model, and environment inputs. If a settings file is necessary, implement a small custom adapter only after recording the native-control gap and qualifying that adapter separately. Determine which evidence is genuinely available from Harbor and the integration rather than assumed from the old wrapper:
 
 - target skill availability;
 - target-specific invocation;
@@ -342,7 +347,7 @@ Do not recreate the old host settings/plugin wrapper inside the Harbor task. Use
 
 ### Phase 4 — Migrate one D7Y outcome case
 
-Migrate only the positive `starting-initiatives` creation case. Keep the case small and use the independent D7Y initiative checker in the separate verifier.
+Migrate only the positive `starting-initiatives` creation case. Keep the case small. The public `scripts/check-initiatives.py` capability checker is staged separately into the verifier, where a private grading wrapper supplies expected rules and records the checker commit/digest; the agent's public copy is not the private grader.
 
 The agent environment receives only:
 
@@ -352,7 +357,7 @@ The agent environment receives only:
 - the D7Y capability needed by the case;
 - the treatment skill in the treatment arm.
 
-The verifier image contains the private initiative checker and expected outcome rules. It receives only the declared initiative output and required trace or command artifacts, then independently runs the checker and reports outcome evidence separately from process evidence.
+The verifier image contains the private grading wrapper, a separately staged copy of the public capability checker, and expected outcome rules. It receives only the declared initiative output and required trace or command artifacts, then independently runs the checker and reports outcome evidence separately from process evidence.
 
 **Exit evidence:** one inspectable baseline/treatment pair, with source checkout unchanged and every non-success classified.
 
@@ -360,7 +365,7 @@ The verifier image contains the private initiative checker and expected outcome 
 
 Migrate a materially different prompt that should not invoke `starting-initiatives`. Run it in both arms. The treatment may have the skill available, but must not invoke it for the negative control.
 
-**Exit evidence:** positive and negative invocation behavior is reported separately from outcome behavior. If invocation is unavailable through Harbor, stop the full invocation qualification and record the bounded outcome-only capability instead of inferring invocation.
+**Exit evidence:** positive and negative invocation behavior is reported separately from outcome behavior. If invocation is unavailable through Harbor, stop the full invocation qualification and record `claude-outcome-only`, explicitly unqualified for invocation, instead of inferring invocation.
 
 ### Phase 6 — Add evidence-informed deterministic checks
 

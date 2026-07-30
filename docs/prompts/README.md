@@ -36,6 +36,7 @@ Slugs are lowercase kebab-case. Filenames are stable identifiers; do not rename 
 A concrete prompt is immutable once execution begins.
 
 - Amp commits the concrete prompt **before** creating the task worktree and invoking the executor, so the executor always starts from the reviewed, committed text.
+- A concrete prompt must have frontmatter `status: committed` before delegation. Draft or ready prompts are review artifacts, not executable handoffs; the launcher rejects them.
 - The executor must not modify the concrete prompt after execution begins. Implementation feedback goes into the governing plan, not back into the prompt.
 - The launcher (`scripts/delegate-claude.sh`) rejects an untracked, uncommitted, or dirty prompt, and resolves the exact prompt commit to report.
 - A concrete prompt never embeds its own Git commit SHA, because a tracked file cannot contain the ID of the commit that contains it. The launcher resolves the execution base from task `HEAD` and records it in the runtime envelope instead.
@@ -77,7 +78,7 @@ The settings file must be owned by the current user and must not be group/world 
 A prompt constrains an executor; it does not control it the way code controls a function.
 
 - Model output is not deterministic. The same prompt and state can produce different results.
-- A permission profile and prompt are not an OS or container sandbox. They narrow the tool surface and permission grants; they do not isolate filesystem paths, processes, ports, caches, or credentials.
+- A permission profile and prompt are not an OS or container sandbox. They narrow the tool surface and permission grants; they do not isolate filesystem paths, processes, ports, caches, credentials, or network egress. The launcher's reported network posture is not technical enforcement.
 - Claude Code's effective tool set is whatever the host actually exposes. If a required flag is unsupported, the launcher stops and reports the mismatch rather than silently widening permissions.
 - Treat the preserved prompt plus the postflight report (changed paths, commits created, worktree cleanliness) as the evidence trail. Promote claims only to the strength the evidence supports.
 

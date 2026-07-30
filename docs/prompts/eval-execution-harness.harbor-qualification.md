@@ -43,9 +43,9 @@ This prompt is not executable until the launcher network posture is resolved. `s
 
 Use Harbor `0.20.0` and local Docker only. If Harbor cannot be resolved at exactly `0.20.0`, or `docker info` cannot access a daemon, stop and report `environment_error`; do not substitute the old wrapper, a shared latest installation, or another provider. Record Docker server version, storage driver, cgroup/runtime posture, kernel/network prerequisites, and Harbor image digests. Use `UV_CACHE_DIR=/tmp/d7y-harbor-uv-cache` or `--no-cache`; do not mutate shared user tooling with `uv tool install`.
 
-The initial fixed task limits are setup 600 seconds, agent 600 seconds, verifier 120 seconds, 2 CPUs, 4096 MiB memory, and 10240 MiB storage. Configure explicit non-public network policies for setup, agent, and verifier. Gate A is credential-free for the Harbor trial agent/environment and must not invoke a live model endpoint. The host implementation executor remains Claude Code and may use its own invocation credentials; the launcher-imported host environment must never be copied into the Harbor trial.
+The initial fixed task limits are environment build 600 seconds, agent setup 600 seconds, agent run 600 seconds, verifier 120 seconds, 2 CPUs, 4096 MiB memory, and 10240 MiB storage. Configure explicit non-public network policies for setup, agent, and verifier, with CPU/memory enforcement modes recorded explicitly. Gate A is credential-free for the Harbor trial agent/environment and must not invoke a live model endpoint. The host implementation executor remains Claude Code and may use its own invocation credentials; the launcher-imported host environment must never be copied into the Harbor trial.
 
-The Harbor trial must not read or mount the host user's `~/.claude/settings.json`. The launcher may read the host settings for the implementation executor under its existing posture, but those values are not valid Harbor-trial configuration. Gate A uses native Harbor task controls only and a non-secret environment sentinel. Do not implement Claude settings injection, API routing, or a Compose sidecar in this foundation handoff. A later human-approved Gate B prompt must supply the concrete API profile; the executor must not invent one.
+The Harbor trial must not read or mount the host user's `~/.claude/settings.json`. The launcher may read the host settings for the implementation executor under its existing posture, but those values are not valid Harbor-trial configuration. Gate A reserves task `[environment].env` for a public non-secret interpolation sentinel. Gate B must pass any real credential only through trial-scoped `[agent].env` using the D7Y key allowlist, with a sensitive-looking canary and post-finalization byte scan. Do not implement Claude settings injection, API routing, or a Compose sidecar in this foundation handoff. A later human-approved Gate B prompt must supply the concrete external-proxy API profile; the executor must not invent one.
 
 ## Runtime payload boundary
 
@@ -59,13 +59,13 @@ For the first D7Y case, the agent payload is exactly:
 
 The agent image must not contain the source checkout, eval definitions, expected outcomes, assertions, benchmark summaries, private grading wrappers, or harness control files. `scripts/check-initiatives.py` is a public D7Y capability checker deliberately included in the payload; it is not the eval grader. Build private expected outcomes, assertions, and grader/checker wrappers into the separate verifier environment. Transfer only allowlisted agent outputs and evidence to that verifier.
 
-Record both the target skill content digest and resolved source commit. Missing either invalidates treatment provenance.
+Commit the exact skill/task inputs before behavioral execution. Verify their bytes match that D7Y source commit, then record the D7Y source commit separately from Harbor's skill content digest. Missing either invalidates treatment provenance.
 
 ## Scope
 
 Implement only the first qualification slice:
 
-1. A disposable Harbor isolation task with positive and deliberately broken probes.
+1. A disposable Harbor isolation task using Harbor's built-in Oracle with a synthetic solution script for active read, write, environment, network, timeout, and artifact probes; use no-op only for absent-action or missing-artifact controls.
 2. A disposable skill treatment pair with and without skill injection.
 3. Harbor task/verifier/network/artifact qualification without Claude credentials.
 4. Task/provenance normalization needed by D7Y; do not replace the D7Y schema or implement maturity scoring.
@@ -79,20 +79,24 @@ Run and report exact results for:
 - Harbor installation and version check;
 - Docker daemon access;
 - namespaced Docker resource creation, inspection, and cleanup ownership; never mount the Docker socket into a trial container;
+- effective UID and non-root verification;
+- environment-build, agent-setup, agent-run, and verifier timeout behavior;
+- CPU and memory enforcement modes plus an over-limit storage write test;
 - Docker storage enforcement and network-controller capability;
 - positive and negative isolation probes;
 - separate verifier with private checker material;
 - required-artifact absence and fail-closed behavior;
 - baseline/treatment skill provenance and leakage checks;
 - `environment.env` interpolation with a non-secret sentinel;
-- deterministic secret-canary/redaction scan across task files, manifests, logs, and artifacts;
+- deterministic public interpolation-canary scan across task files, manifests, logs, and artifacts;
+- separate sensitive-looking trial-agent canary/redaction scan after Harbor finalization, including quarantine/deletion on raw bytes and fail-closed handling for unreadable files;
 - `git diff --check`;
 - `python3 evals/validate_skill_evals.py`;
 - `./d7y validate` where the implementation touches repository validation surfaces.
 
 Classify all failures with the canonical identifiers: `environment_error`, `pair_error`, `agent_error`, `evidence_error`, `verifier_error`, `assertion_fail`, or `ungradable`.
 
-If prerequisites fail, make only the smallest safe documentation or capability-record adjustment needed to report the blocker, then stop. Do not weaken isolation, use Harbor's public network default, import unreviewed host state, use real Harbor-trial Claude credentials, or claim a qualified run.
+If prerequisites fail, make only the smallest safe documentation or capability-record adjustment needed to report the blocker, then stop. Do not weaken isolation, use Harbor's public network default, import unreviewed host state, use real Harbor-trial Claude credentials, or claim a qualified run. A storage over-limit failure or unsupported quota is `foundation-blocked`, not `foundation-qualified`.
 
 ## Completion
 

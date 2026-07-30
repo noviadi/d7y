@@ -65,7 +65,9 @@ Trust boundary:
   requires an OS/container sandbox.
 
 Runtime posture:
-  Network is prohibited. MCP is strict-empty
+  Network posture is reported as prohibited for Claude's built-in network tools;
+  this is not an OS egress firewall. Bash remains subject to the selected profile
+  and host policy. MCP is strict-empty
   (--mcp-config '{"mcpServers":{}}' --strict-mcp-config).
   Sessions are non-persistent (--no-session-persistence). Claude settings remain
   project-only (--setting-sources project); only the top-level env object from
@@ -372,6 +374,14 @@ prompt_blob="$(git rev-parse "$task_head:$rel" 2>/dev/null)" \
   || die "prompt is not committed at starting HEAD $task_head: $rel"
 [[ "$(git cat-file -t "$prompt_blob" 2>/dev/null)" == "blob" ]] \
   || die "committed prompt object is not a blob: $rel"
+
+prompt_status="$(git cat-file blob "$prompt_blob" | awk '
+  NR == 1 { in_frontmatter = ($0 == "---"); next }
+  in_frontmatter && /^status:[[:space:]]*/ { sub(/^status:[[:space:]]*/, ""); print; exit }
+  in_frontmatter && $0 == "---" { exit }
+')"
+[[ "$prompt_status" == "committed" ]] \
+  || die "prompt status must be 'committed' before delegation (got '${prompt_status:-missing}')"
 
 # Branch must be a non-main work/<slug> branch in a clean worktree.
 branch="$(git rev-parse --abbrev-ref HEAD)"

@@ -99,7 +99,7 @@ same task, image, prompt, model, tools, permissions, resources, and network
 └── treatment: target skill at an immutable content digest or commit
 ```
 
-The first qualified provider is local Docker through Harbor. Every result records the Harbor version, provider, task configuration, image digest, agent integration, model, skill revision, and date. A result scoped to one provider does not prove portability to other Harbor providers or hosts.
+The first qualified provider is local Docker through Harbor, conditional on an independently verified storage quota mechanism and the declared CPU, memory, network, and mount boundaries. A local Docker capability probe without that quota is not a qualified provider result. Every result records the Harbor version, provider, task configuration, image digest, agent integration, model, skill revision, and date. A result scoped to one provider does not prove portability to other Harbor providers or hosts.
 
 Claude configuration is task-scoped, not inherited from the host. Do not read or mount the host user's `~/.claude/settings.json`. Each trial resolves a named API-routing profile describing direct-endpoint or proxy routing, the agent-visible endpoint, allowlisted runtime keys, credential sources, network allowlist, and redacted configuration digests. Inject only explicitly allowlisted runtime configuration values; never commit or persist credential values. Record route evidence separately from requested and effective model/provider evidence. A requested model is not evidence of the effective routed model.
 

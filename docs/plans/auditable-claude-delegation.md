@@ -22,7 +22,7 @@ Repeatable means another operator can reconstruct the committed prompt, reposito
 - The launcher lives at `scripts/delegate-claude.sh`, takes a concrete prompt path, applies reviewed permission defaults, validates the handoff context, and invokes Claude Code with the prompt content verbatim inside a deterministic runtime envelope.
 - The launcher is a thin deterministic boundary, not a workflow engine. Amp still plans, creates the branch/worktree, reviews, rebases when necessary, integrates, and performs deliberate cleanup.
 - Concrete prompts do not embed their own Git commit SHA because a tracked file cannot contain the ID of the commit that contains it. The launcher resolves the exact execution base from task `HEAD`, adds it to the runtime envelope sent to Claude, and reports it for plan feedback.
-- Default execution is non-interactive and least-privilege oriented: `dontAsk`, no web tools, no inherited MCP servers, no session persistence, and only the selected profile's built-in tools and command grants.
+- Default execution is non-interactive and least-privilege oriented: `dontAsk`, no web tools, no inherited MCP servers, no session persistence, and only the selected profile's built-in tools and command grants. The launcher's reported network posture is not OS-level egress enforcement; host network policy and any required sandbox must be recorded separately.
 - The first profiles are `docs-commit` and `implementation-commit`. Shared defaults stay narrow; task-specific extra tool grants must be explicit launcher arguments and preserved in the concrete prompt.
 - This initial bootstrap delegation may invoke Claude Code directly because the launcher does not exist yet. Amp must preserve the concrete prompt, constrain the direct invocation equivalently, and record its exact permission posture in review. Subsequent isolated handoffs use the launcher by default.
 - A permission profile and prompt constrain Claude Code but do not create filesystem or process isolation. High-risk or untrusted execution still requires an OS/container sandbox.
@@ -48,6 +48,7 @@ Create executable `scripts/delegate-claude.sh` with:
 - `--profile docs-commit|implementation-commit` with a conservative default;
 - optional explicit `--model`, `--effort`, and repeatable `--allow-tool` arguments;
 - checks that the prompt is inside `docs/prompts/`, tracked, committed, and unchanged;
+- checks that the prompt frontmatter is `status: committed`; draft and ready prompts cannot execute;
 - checks that execution is on a non-`main` `work/<slug>` branch in a clean worktree;
 - resolution and reporting of repository root, prompt commit, task base/starting `HEAD`, current branch, current worktree, Claude Code version, profile, model/effort when provided, and extra tool grants;
 - a runtime envelope containing those exact values before the committed prompt content;
