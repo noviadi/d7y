@@ -94,6 +94,7 @@ Append implementation feedback to this plan with:
 
 - `bash -n scripts/delegate-claude.sh`
 - `scripts/delegate-claude.sh --help`
+- `scripts/test_delegate_prompt_frontmatter.sh`
 - A dry run from the assigned clean task worktree succeeds and reports the exact prompt, branch, worktree, starting HEAD, profile, and command posture without invoking Claude.
 - Focused invalid cases reject an untracked prompt, a dirty prompt, an invalid profile, and execution from `main`; use disposable files or isolated temporary repositories and clean them afterward.
 - `git diff --check`
@@ -196,3 +197,9 @@ At the user's direction, Amp implemented this follow-up directly rather than del
 The launcher requires current-user ownership, rejects group/world-writable settings, and recommends mode `600` without requiring it when parent-directory permissions already protect a less restrictive read mode. Imported values remain visible to Claude and its tool subprocesses; this supplies the previously missing authentication environment but does not provide secret or process isolation. An authenticated delegated model run remains required before claiming the environment-specific OAuth gap is closed end to end.
 
 Focused verification passed with disposable fake-Claude fixtures: dry run validated the real user settings without invoking or version-probing Claude; a live-path fixture preserved multiline, empty, shell-like, `RANDOM`, and `LINENO` values exactly through Python `execve`; `bash -x` exposed no values; global model and permission settings were not loaded; a settings change between inspection and execution was rejected before the second Claude invocation; and group/world-writable or non-string environment inputs failed closed. `bash -n scripts/delegate-claude.sh` and `git diff --check` also passed. No real credentials or values were printed during verification.
+
+## Follow-up: draft-prompt lifecycle gate
+
+The Harbor handoff review identified that draft and ready prompts must be real delegation stop conditions. The launcher now requires exactly one closed frontmatter block with unique key/value fields and `status: committed`; missing, duplicate, malformed, draft, and ready statuses fail closed. The reusable implementation template starts with `status: draft`.
+
+Focused verification uses `scripts/test_delegate_prompt_frontmatter.sh` with disposable Git repositories and fake Claude executables. It covers one valid committed prompt plus draft, missing-status, duplicate-status, and missing-closing-delimiter fixtures. The fixture test leaves no files outside its temporary directory. This change does not make the launcher's reported network posture an OS firewall; host network policy and Harbor trial isolation remain separate concerns.

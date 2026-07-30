@@ -1,4 +1,5 @@
 ---
+status: draft
 plan: docs/plans/<plan-slug>.md
 execution: <execution-slug>
 executor: claude-code

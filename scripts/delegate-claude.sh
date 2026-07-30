@@ -375,13 +375,39 @@ prompt_blob="$(git rev-parse "$task_head:$rel" 2>/dev/null)" \
 [[ "$(git cat-file -t "$prompt_blob" 2>/dev/null)" == "blob" ]] \
   || die "committed prompt object is not a blob: $rel"
 
-prompt_status="$(git cat-file blob "$prompt_blob" | awk '
-  NR == 1 { in_frontmatter = ($0 == "---"); next }
-  in_frontmatter && /^status:[[:space:]]*/ { sub(/^status:[[:space:]]*/, ""); print; exit }
-  in_frontmatter && $0 == "---" { exit }
-')"
+if ! prompt_status="$(git cat-file blob "$prompt_blob" | python3 -c '
+import re
+import sys
+
+lines = sys.stdin.read().splitlines()
+if not lines or lines[0] != "---":
+    raise SystemExit("malformed frontmatter: missing opening delimiter")
+
+closing = [index for index, line in enumerate(lines[1:], start=1) if line == "---"]
+if len(closing) != 1:
+    raise SystemExit("malformed frontmatter: expected exactly one closing delimiter")
+
+fields = {}
+for number, line in enumerate(lines[1:closing[0]], start=2):
+    if not line.strip():
+        continue
+    match = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_-]*):[ \t]*(.*)", line)
+    if not match:
+        raise SystemExit(f"malformed frontmatter: invalid field at line {number}")
+    key, value = match.groups()
+    if key in fields:
+        raise SystemExit(f"malformed frontmatter: duplicate field {key!r}")
+    fields[key] = value
+
+status = fields.get("status")
+if status is None:
+    raise SystemExit("malformed frontmatter: missing status")
+print(status)
+')"; then
+  die "prompt frontmatter could not be parsed"
+fi
 [[ "$prompt_status" == "committed" ]] \
-  || die "prompt status must be 'committed' before delegation (got '${prompt_status:-missing}')"
+  || die "prompt status must be 'committed' before delegation (got '$prompt_status')"
 
 # Branch must be a non-main work/<slug> branch in a clean worktree.
 branch="$(git rev-parse --abbrev-ref HEAD)"

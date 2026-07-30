@@ -40,7 +40,7 @@ The relevant paper insight is that skill contribution should be estimated throug
 
 Use Harbor's task, environment, agent, trial, artifact, and verifier concepts where they reduce bespoke infrastructure. Do not make Harbor's numeric reward file, task layout, or agent adapter the canonical D7Y eval schema.
 
-Harbor's local Docker environment remains the first qualified-provider target. The assigned Docker daemon must be configured with an independently verified storage quota mechanism, such as overlay2 on XFS project quotas with a tested per-container `storage_mb` ceiling. No such mechanism is currently assigned in this repository; until one is supplied and verified, the daemon is only a capability-probe target and cannot qualify. A different provider is a separately scoped qualification, not an implied substitute.
+Harbor's local Docker environment remains the first qualified-provider target. The assigned Docker daemon must be configured with an independently verified external storage quota mechanism, such as a daemon-side XFS project quota mapped by the executor to each Harbor trial's declared D7Y storage limit. Harbor `storage_mb` alone does not configure this Docker quota. No such mechanism is currently assigned in this repository; until one is supplied and verified, the daemon is only a capability-probe target and cannot qualify. A different provider is a separately scoped qualification, not an implied substitute.
 
 ### Containers replace host-side isolation claims
 
@@ -161,7 +161,7 @@ The committed runtime payload for the first D7Y case is exactly: `SKILL.md`, `in
 - The source checkout, host home, host Claude configuration, host skill roots, credentials, and Docker socket are not mounted into trial containers. The host implementation executor may use the Docker daemon to build, pull, run, inspect, and clean up Harbor resources, but that access is outside the trial and must be explicitly recorded.
 - The agent user and effective working directory are recorded.
 - CPU, memory, storage, timeout, and network policy are applied. A reported-but-unenforced limit is not qualification evidence.
-- `network_mode` is explicit and never inherited from Harbor's public default.
+- `[environment].network_mode` is explicit for environment startup/setup and never inherited from Harbor's public default; `[agent].network_mode` is the agent-run override; `[verifier].network_mode` is the verifier override. Setup package hosts belong to the environment baseline allowlist, while the runtime API host belongs to the agent phase allowlist.
 - The verifier is a separate environment, contains its private checker, and receives only declared artifacts and evidence.
 - The container is discarded or reset between baseline and treatment.
 
@@ -245,7 +245,8 @@ Represent the route as a named, versioned API profile resolved when the Harbor t
 
 For the external proxy topology, the generated task keeps the proxy endpoint and
 non-secret profile metadata in task configuration, and passes the credential only
-through trial-scoped `agent.env` at execution time. Harbor's `${HOST_VAR}`
+through TrialConfig's trial-scoped `agent.env` at execution time, supplied through
+the Harbor job/trial configuration or the `--agent-env`/`--ae` CLI path. Harbor's `${HOST_VAR}`
 interpolation in `environment.env` is tested only with Gate A's public sentinel.
 Gate B's sensitive-looking canary is agent-scoped and must be checked after
 finalization. The proxy must emit a redacted request record (route, requested model,
@@ -268,7 +269,7 @@ Support API topologies progressively:
 - **Foundation — external proxy:** the agent reaches an approved HTTPS proxy through an exact Harbor runtime allowlist; the proxy handles upstream authentication and any model translation. This is the first Gate B topology. Direct official Anthropic routing is deferred until an independent route-evidence mechanism is defined and qualified.
 - **Follow-on — Docker Compose sidecar:** a Compose sidecar receives agent requests on an internal service name. Sidecar configuration and upstream identity are hashed and recorded, credentials remain runtime-only, and direct agent-to-upstream access must be tested separately. This topology is Docker-specific; Harbor documents that many cloud providers do not support Compose environments.
 
-The first Gate B credentialed qualification must prove the external proxy/custom endpoint topology with a harmless request and a known response. It must record the API profile, route identity, proxy request record, requested model, effective model/provider when available, and authentication key names. It must fail with `evidence_error` or `agent_error` when the route cannot be established, and with `pair_error` when baseline and treatment receive different API profiles. Effective model/provider is useful provenance, but route evidence comes from the proxy or endpoint boundary, not from the final response.
+The first Gate B credentialed qualification must prove the external proxy topology with a harmless request and a known response. It must record the API profile, route identity, proxy request record, requested model, effective model/provider when available, and authentication key names. It must fail with `evidence_error` or `agent_error` when the route cannot be established, and with `pair_error` when baseline and treatment receive different API profiles. Effective model/provider is useful provenance, but route evidence comes from the proxy or endpoint boundary, not from the final response.
 
 ## Progressive implementation sequence
 
@@ -284,7 +285,7 @@ Record the pinned Harbor version and invocation, Python version, Docker client a
 
 Build and run a disposable task using Harbor `0.20.0` and local Docker only. Use Harbor's built-in Oracle with a synthetic solution script for active read, write, environment, network, timeout, and artifact probes; use a no-op only for deliberately absent-action or missing-artifact controls. Do not require Harbor-trial Claude authentication. Prove the exact `task.toml` fields used by this plan: environment and phase network policies, `environment.env` interpolation with a public non-secret sentinel, separate verifier configuration, declared artifacts, and the selected resource controls. Test storage enforcement explicitly with an over-limit write. If Docker reports storage without enforcing it, record `environment_error` as a foundation blocker; do not call the probe qualified. Run positive and deliberately broken variants and classify each failure.
 
-Add two deterministic canaries. Gate A injects a public interpolation sentinel through `environment.env`. Gate B, only after human approval, injects a sensitive-looking canary through trial-scoped `agent.env` using the D7Y key allowlist. After Harbor finalization, scan task files, manifests, logs, and collected artifacts byte-for-byte; permit only an approved redacted marker or digest representation. If raw sensitive bytes appear, quarantine the result, delete the raw-secret-bearing artifacts, and report `evidence_error`; never publish or grade the trial. Account for binary/unreadable files by failing closed when they cannot be scanned.
+Add two deterministic canaries. Gate A injects a public interpolation sentinel through `environment.env` and a deliberately fake sensitive-looking value through TrialConfig's trial-scoped `agent.env`, using a key such as `D7Y_TEST_AUTH_TOKEN` that Harbor recognizes as sensitive. Gate B repeats the sensitive canary with the approved credential posture. After Harbor finalization, scan task files, manifests, logs, and collected artifacts byte-for-byte: the public sentinel may remain only in named proof surfaces, while the fake or real sensitive value may remain nowhere; only an approved redacted marker or digest representation is allowed. If raw sensitive bytes appear, quarantine the result, delete the raw-secret-bearing artifacts, and report `evidence_error`; never publish or grade the trial. Account for binary/unreadable files by failing closed when they cannot be scanned.
 
 **Exit evidence:** a Harbor `0.20.0` capability record, valid task fixtures, positive and negative results, separate-verifier evidence, a behavioral storage-boundary result, and a clean canary report. The result is `foundation-qualified` only when storage and network boundaries are enforced. Otherwise return `foundation-blocked` with the missing quota mechanism named; never report a successful foundation qualification.
 
@@ -498,6 +499,12 @@ Static task validation is not behavioral evidence. A successful Harbor startup i
 - [Harbor agents](https://www.harborframework.com/docs/agents) — Claude Code integration and custom agent boundaries.
 - [Harbor skills](https://www.harborframework.com/docs/run-jobs/skills) — skill injection and content provenance.
 - [Harbor artifact collection](https://www.harborframework.com/docs/run-jobs/results-and-artifacts) — artifact and sidecar evidence behavior.
+- [Harbor `v0.20.0` task schema](https://github.com/harbor-framework/harbor/blob/v0.20.0/src/harbor/models/task/config.py) — environment, phase network, verifier, and artifact fields.
+- [Harbor `v0.20.0` trial schema](https://github.com/harbor-framework/harbor/blob/v0.20.0/src/harbor/models/trial/config.py) — trial-scoped `agent.env` and agent configuration path.
+- [Harbor `v0.20.0` base environment](https://github.com/harbor-framework/harbor/blob/v0.20.0/src/harbor/environments/base.py) — environment/agent execution boundary.
+- [Harbor `v0.20.0` resource capabilities](https://github.com/harbor-framework/harbor/blob/v0.20.0/src/harbor/environments/capabilities.py) and [Docker provider](https://github.com/harbor-framework/harbor/blob/v0.20.0/src/harbor/environments/docker/docker.py) — enforced resource limits and storage limitation.
+- [Harbor `v0.20.0` environment utilities](https://github.com/harbor-framework/harbor/blob/v0.20.0/src/harbor/utils/env.py) and [trial finalization](https://github.com/harbor-framework/harbor/blob/v0.20.0/src/harbor/trial/trial.py) — sensitive-key scrubbing and post-finalization behavior.
+- [Harbor `v0.20.0` skill provenance](https://github.com/harbor-framework/harbor/blob/v0.20.0/src/harbor/skills.py) and [job lock](https://github.com/harbor-framework/harbor/blob/v0.20.0/src/harbor/models/job/lock.py) — content digest and Git-backed provenance limits.
 - [Agent Skill Evaluation and Evolution: Frameworks and Benchmarks](https://arxiv.org/html/2606.11435v1) — paired rollout comparison, execution feedback, multi-run trajectories, safety, cost/latency, and longitudinal gaps.
 
 ## Completion boundary
