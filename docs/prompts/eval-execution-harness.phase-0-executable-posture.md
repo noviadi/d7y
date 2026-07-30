@@ -1,5 +1,5 @@
 ---
-status: draft
+status: committed
 plan: docs/plans/eval-execution-harness.md
 execution: phase-0-executable-posture
 executor: claude-code
@@ -26,9 +26,27 @@ Stop on any mismatch, dirty worktree, or missing input.
 
 There is no predecessor phase. The frozen `work/eval-execution-harness` branch
 and superseded `harbor-qualification` prompt are historical inputs only.
-A human must supply the exact non-secret direct-endpoint or proxy identity,
-requested model, allowed hosts, runtime key names, and credential key name
-before execution. The credential value is not a Phase 0 input.
+
+The human-approved API-profile input is:
+
+- profile: `claude-primary`;
+- route: intentional z.ai proxy;
+- agent-visible endpoint: `https://api.z.ai/api/anthropic`;
+- requested/canonical model: `claude-sonnet-5`;
+- expected routed Sonnet model: `glm-4.7`;
+- Harbor runtime allowed host: `api.z.ai`;
+- credential key name: `ANTHROPIC_AUTH_TOKEN`;
+- allowlisted non-secret runtime values:
+  `ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic`,
+  `ANTHROPIC_DEFAULT_SONNET_MODEL=glm-4.7`,
+  `API_TIMEOUT_MS=3000000`,
+  `CLAUDE_CODE_AUTO_COMPACT_WINDOW=1000000`, and
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`.
+
+These values were resolved from the human-authorized top-level `env` object in
+`~/.claude/settings.json`; do not read or record the credential value. Do not
+forward unrelated Opus or Haiku defaults into Harbor trials. Effective model
+and provider remain runtime evidence rather than assumptions from this profile.
 
 # Required context
 
@@ -86,7 +104,7 @@ the eval schema, a skill, an initiative, or another plan.
    deterministic build inputs. Prove the installed version without a model call.
 3. Establish the separate verifier image posture and its no-network baseline.
    Do not add case-specific private graders yet.
-4. Validate the human-supplied API-profile values and commit the resolved
+4. Validate the approved API-profile values above and commit the resolved
    non-secret artifact at `evals/harbor/profiles/claude-primary.json`. It records
    requested model, endpoint identity, exact allowed hosts, runtime key names,
    credential key name, and redacted digest semantics. Do not invent or default
