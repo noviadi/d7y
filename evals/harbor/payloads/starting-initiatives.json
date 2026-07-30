@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "skill": "starting-initiatives",
+  "description": "Exact runtime payload the starting-initiatives agent receives in a Harbor trial. The fixed inputs below are staged from the committed repository at trial-build time; per-case instruction and synthetic fixtures are added as declared slots. The agent image itself contains none of this material. Validated by evals/harbor/scripts/posture.py, which re-checks every content digest and rejects any non-allowlisted or forbidden source.",
+  "staged": [
+    {
+      "source": "initiatives/README.md",
+      "destination": "initiatives/README.md",
+      "arm": "both",
+      "sha256": "99a961e69d7f7df6415b541ec2cd5465d09604a5d0bd91e2c8acfb4153a5065a",
+      "rationale": "initiative organization contract; SKILL.md step 1 requires it"
+    },
+    {
+      "source": "d7y",
+      "destination": "d7y",
+      "arm": "both",
+      "sha256": "75a857c0def04616a0b7567846624ebe3c3e622d68de322a04b042e61de9d395",
+      "rationale": "dependency-free D7Y CLI facade (d7y initiatives list/check)"
+    },
+    {
+      "source": "scripts/check-initiatives.py",
+      "destination": "scripts/check-initiatives.py",
+      "arm": "both",
+      "sha256": "746b0f122eecc78d0cc3800eb22c9752f067efca4545534e6e4f1bb2ee1a6512",
+      "rationale": "public independent initiative checker invoked by d7y"
+    },
+    {
+      "source": "skills/starting-initiatives/SKILL.md",
+      "destination": "skills/starting-initiatives/SKILL.md",
+      "arm": "treatment",
+      "sha256": "f3954d75cb9b7becab6736fff8815b3e6ccf926a5de9c1e793c8a1ad1c1674fb",
+      "rationale": "target skill; injected only into the treatment arm"
+    }
+  ],
+  "per_case_slots": {
+    "instruction": "case-specific instruction text resolved from the committed eval case",
+    "fixtures": "declared synthetic workspace files from the case's files[] list"
+  },
+  "excluded": [
+    "eval definitions (evals.json) and the eval schema",
+    "expected outcomes and assertion definitions",
+    "grader/checker source for the verifier (verifier-only)",
+    "benchmark summaries (benchmark.json)",
+    "plan and prompt files (docs/plans/, docs/prompts/)",
+    "the source checkout, host home, and Docker socket mounts",
+    "host ~/.claude/settings.json and any credentials"
+  ]
+}

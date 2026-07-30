@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "profile": "claude-primary",
+  "status": "phase-0-posture",
+  "route": {
+    "kind": "proxy",
+    "description": "intentional z.ai proxy",
+    "provider_attestation": "unavailable",
+    "effective_model_provider": "unavailable"
+  },
+  "endpoint": {
+    "agent_visible_url": "https://api.z.ai/api/anthropic",
+    "allowed_hosts": [
+      "api.z.ai"
+    ]
+  },
+  "requested_model": "claude-sonnet-5",
+  "expected_routed_model": "glm-4.7",
+  "credential": {
+    "key_name": "ANTHROPIC_AUTH_TOKEN",
+    "value": "external",
+    "handling": "opaque trial-scoped agent environment injection; the value is never read, displayed, or persisted, and no verifier or other process receives it"
+  },
+  "runtime_env": {
+    "allowlist": {
+      "ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-4.7",
+      "API_TIMEOUT_MS": "3000000",
+      "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "1000000",
+      "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+    },
+    "excluded_defaults": [
+      "ANTHROPIC_DEFAULT_OPUS_MODEL",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL"
+    ]
+  },
+  "harbor_runtime": {
+    "allowed_hosts": [
+      "api.z.ai"
+    ],
+    "network_mode": "allowlist"
+  },
+  "redacted_digest": {
+    "algorithm": "sha256",
+    "value": "3088a1cae0ff9b0d1824c68f744b19402dfda1698cb9d096dcefe7e367ea0694",
+    "semantics": "SHA-256 over the canonical JSON of this profile with redacted_digest.value nulled; it covers only the non-secret values and key names recorded here; the credential value is external and excluded by construction"
+  }
+}

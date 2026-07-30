@@ -1,0 +1,5 @@
+# The verifier image must not receive any repository source, evals, graders,
+# settings, or credentials through the build context. Only the Dockerfile and
+# this ignore file live in this directory; everything else is excluded.
+*
+!Dockerfile

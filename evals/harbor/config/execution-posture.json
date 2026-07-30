@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "phase": 0,
+  "description": "Harbor execution envelope for D7Y eval trials on local Docker. Records the CPU, memory, storage, timeout, user, and network posture every baseline/treatment arm must share. Validated by evals/harbor/scripts/posture.py.",
+  "provider": {
+    "type": "docker",
+    "context": {
+      "name": "default",
+      "endpoint": "unix:///var/run/docker.sock"
+    }
+  },
+  "resources": {
+    "cpus": 2,
+    "cpu_enforcement_policy": "limit",
+    "memory_mb": 4096,
+    "memory_enforcement_policy": "limit",
+    "storage_mb": 10240,
+    "agent_timeout_sec": 600,
+    "verifier_timeout_sec": 120,
+    "build_timeout_sec": 600
+  },
+  "storage_enforcement": {
+    "declared_storage_mb": 10240,
+    "effective_support": "unsupported",
+    "basis": "local Docker uses overlay2 on an ext4 data root with no XFS/project-quota support, and Harbor passes storage_mb through only on quota-capable providers; the declared value is retained as task metadata, never treated as enforced"
+  },
+  "users": {
+    "agent": "agent",
+    "verifier": "verifier"
+  },
+  "network": {
+    "environment_baseline": "no-network",
+    "agent_phase": {
+      "mode": "allowlist",
+      "allowed_hosts": ["api.z.ai"]
+    },
+    "verifier": {
+      "mode": "no-network",
+      "environment_mode": "separate"
+    }
+  },
+  "harbor_task_mapping": {
+    "environment": "network_mode=\"no-network\", cpus=2, memory_mb=4096, storage_mb=10240, docker_image=<agent image>",
+    "agent": "timeout_sec=600, user=\"agent\", network_mode=\"allowlist\", allowed_hosts=[\"api.z.ai\"]",
+    "verifier": "timeout_sec=120, user=\"verifier\", environment_mode=\"separate\", environment={network_mode=\"no-network\", docker_image=<verifier image>}",
+    "enforcement": "cpu_enforcement_policy=limit, memory_enforcement_policy=limit"
+  }
+}
