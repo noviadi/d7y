@@ -1,7 +1,7 @@
 ---
 status: draft
 plan: docs/plans/eval-execution-harness.md
-execution: phase-1.4-controls
+execution: phase-1-4-controls
 executor: claude-code
 branch: work/eval-harness-phase1
 worktree: /home/noviadi/Developments/discovery/d7y-worktrees/eval-harness-phase1
