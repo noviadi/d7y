@@ -13,16 +13,16 @@ You are implementing the first Harbor qualification slice for D7Y's progressive 
 ## Handoff payload
 
 - Governing plan: `docs/plans/eval-execution-harness.md`
-- Execution slug: `harbor-foundation`
+- Execution slug: `harbor-qualification`
 - Executor: Claude Code through `scripts/delegate-claude.sh`
 - Assigned branch: `work/eval-execution-harness-harbor`
 - Assigned worktree: `/home/noviadi/Developments/discovery/d7y-worktrees/eval-execution-harness-harbor`
 - Permission profile: `implementation-commit`
 - Extra tool grants: none
-- Executor network posture: package download allowed only through the approved Harbor/uv mechanism; no credentialed Claude/API access in this foundation handoff
+- Executor network posture: blocked pending a reviewed network-enabled launcher posture or pre-staged offline Harbor package/image bundle; the current launcher reports network `prohibited`
 - Executor MCP posture: strict-empty; no MCP servers
 - Executor persistence posture: disabled
-- Writable paths: assigned worktree only, plus explicitly disposable `/tmp/d7y-harbor-*` directories; no host checkout, home, Docker socket, or credential paths
+- Writable paths: assigned worktree only, plus explicitly disposable `/tmp/d7y-harbor-*` and `/tmp/d7y-harbor-uv-cache` directories; no host checkout, host home, or credential paths. Host Docker daemon resources are external state, not trial-container mounts.
 - Required context: `AGENTS.md`, `DEVELOPMENT.md`, `docs/discovery-workbench.md`, `docs/discovery-workbench-principles.md`, `docs/skill-evaluations.md`, `docs/plans/eval-execution-harness.md`, `docs/prompts/README.md`, and the Harbor `v0.20.0` task, agent, network, and artifact documentation
 - Commit authority: explicitly granted on the assigned branch only
 - Executor lifecycle authority: no rebase, merge, push, worktree removal, or branch deletion
@@ -39,11 +39,13 @@ docker info
 python3 --version
 ```
 
-Use Harbor `0.20.0` and local Docker only. If Harbor cannot be resolved at exactly `0.20.0`, or `docker info` cannot access a daemon, stop and report `environment_error`; do not substitute the old wrapper, a shared latest installation, or another provider. Record Docker server version, storage driver, cgroup/runtime posture, kernel/network prerequisites, and Harbor image digests. Do not mutate shared user tooling with `uv tool install`.
+This prompt is not executable until the launcher network posture is resolved. `scripts/delegate-claude.sh` currently reports network `prohibited`, while Harbor package resolution and Docker image pulls require network access. Either add and review a network-enabled launcher posture or pre-stage exact Harbor packages and image digests for offline execution; do not silently override the launcher posture.
 
-The initial fixed task limits are setup 600 seconds, agent 600 seconds, verifier 120 seconds, 2 CPUs, 4096 MiB memory, and 10240 MiB storage. Configure explicit non-public network policies for setup, agent, and verifier. Gate A is credential-free and must not invoke Claude Code or any live model endpoint.
+Use Harbor `0.20.0` and local Docker only. If Harbor cannot be resolved at exactly `0.20.0`, or `docker info` cannot access a daemon, stop and report `environment_error`; do not substitute the old wrapper, a shared latest installation, or another provider. Record Docker server version, storage driver, cgroup/runtime posture, kernel/network prerequisites, and Harbor image digests. Use `UV_CACHE_DIR=/tmp/d7y-harbor-uv-cache` or `--no-cache`; do not mutate shared user tooling with `uv tool install`.
 
-Do not read or mount the host user's `~/.claude/settings.json`. Gate A uses native Harbor task controls only and a non-secret environment sentinel. Do not implement Claude settings injection, API routing, or a Compose sidecar in this foundation handoff. A later human-approved Gate B prompt must supply the concrete API profile; the executor must not invent one.
+The initial fixed task limits are setup 600 seconds, agent 600 seconds, verifier 120 seconds, 2 CPUs, 4096 MiB memory, and 10240 MiB storage. Configure explicit non-public network policies for setup, agent, and verifier. Gate A is credential-free for the Harbor trial agent/environment and must not invoke a live model endpoint. The host implementation executor remains Claude Code and may use its own invocation credentials; the launcher-imported host environment must never be copied into the Harbor trial.
+
+The Harbor trial must not read or mount the host user's `~/.claude/settings.json`. The launcher may read the host settings for the implementation executor under its existing posture, but those values are not valid Harbor-trial configuration. Gate A uses native Harbor task controls only and a non-secret environment sentinel. Do not implement Claude settings injection, API routing, or a Compose sidecar in this foundation handoff. A later human-approved Gate B prompt must supply the concrete API profile; the executor must not invent one.
 
 ## Runtime payload boundary
 
@@ -76,6 +78,7 @@ Run and report exact results for:
 
 - Harbor installation and version check;
 - Docker daemon access;
+- namespaced Docker resource creation, inspection, and cleanup ownership; never mount the Docker socket into a trial container;
 - Docker storage enforcement and network-controller capability;
 - positive and negative isolation probes;
 - separate verifier with private checker material;
@@ -89,7 +92,7 @@ Run and report exact results for:
 
 Classify all failures with the canonical identifiers: `environment_error`, `pair_error`, `agent_error`, `evidence_error`, `verifier_error`, `assertion_fail`, or `ungradable`.
 
-If prerequisites fail, make only the smallest safe documentation or capability-record adjustment needed to report the blocker, then stop. Do not weaken isolation, use Harbor's public network default, import unreviewed host state, use real Claude credentials, or claim a qualified run.
+If prerequisites fail, make only the smallest safe documentation or capability-record adjustment needed to report the blocker, then stop. Do not weaken isolation, use Harbor's public network default, import unreviewed host state, use real Harbor-trial Claude credentials, or claim a qualified run.
 
 ## Completion
 

@@ -40,7 +40,7 @@ The relevant paper insight is that skill contribution should be estimated throug
 
 Use Harbor's task, environment, agent, trial, artifact, and verifier concepts where they reduce bespoke infrastructure. Do not make Harbor's numeric reward file, task layout, or agent adapter the canonical D7Y eval schema.
 
-Harbor's local Docker environment is the first qualification target. A remote provider is a later explicitly qualified environment, not an implied portability claim.
+Harbor's local Docker environment is the first capability-probe target. A remote provider or external Docker quota is required for foundation qualification if local Docker cannot enforce storage; it is a later explicitly named qualification target, not an implied portability claim.
 
 ### Containers replace host-side isolation claims
 
@@ -151,14 +151,14 @@ Before migrating a real D7Y suite, prove these properties with a disposable synt
 
 The first qualification targets Harbor `0.20.0` and the local Docker provider. Use a pinned, non-global invocation such as `uvx --from harbor==0.20.0 harbor`; do not silently use a shared latest Harbor installation. Re-qualify if the Harbor version, Docker context, agent integration, provider, or Docker network controller changes. Use these initial fixed limits: setup 600 seconds, agent 600 seconds, verifier 120 seconds, 2 CPUs, 4096 MiB memory, and 10240 MiB storage. Record the Harbor version, Docker client and server versions, storage driver, cgroup/runtime posture, kernel/network prerequisites, image digests, and the exact task schema accepted by the pinned release.
 
-Qualification is split into two gates. Gate A is credential-free Harbor foundation qualification: task loading, explicit network policy, environment injection with a non-secret sentinel, agent/verifier isolation, artifact transfer, and storage enforcement. Gate B is a separately human-approved Claude/API-profile qualification that may use credentials only after its concrete profile is committed outside this plan. No executor may invent a production endpoint, authentication key, upstream model mapping, or proxy evidence mechanism.
+Qualification is split into two gates. Gate A is a Harbor foundation capability probe: task loading, explicit network policy, environment injection with a non-secret sentinel, agent/verifier isolation, artifact transfer, and storage enforcement. On the current local Docker provider, storage enforcement is expected to be unavailable; until an enforceable external Docker quota or provider is named, Gate A can only record a blocker and cannot qualify. Gate B is a separately human-approved Claude/API-profile qualification that may use credentials only after its concrete profile is supplied. No executor may invent a production endpoint, authentication key, upstream model mapping, or proxy evidence mechanism.
 
 The committed runtime payload for the first D7Y case is exactly: `SKILL.md`, `initiatives/README.md`, `d7y`, and `scripts/check-initiatives.py`, plus the case-declared fixture files. `scripts/check-initiatives.py` is a public D7Y capability checker, not the private eval grader. The agent image must not contain the source checkout, eval definitions, expected outcomes, assertions, private grading wrappers, benchmark summaries, or harness control files. The verifier image may contain private assertions, checker/grader wrappers, and expected outcomes and receives only declared outputs and evidence.
 
 ### Environment
 
 - The agent runs inside the intended container, not in the source checkout.
-- The source checkout, host home, host Claude configuration, host skill roots, credentials, and Docker socket are not mounted.
+- The source checkout, host home, host Claude configuration, host skill roots, credentials, and Docker socket are not mounted into trial containers. The host implementation executor may use the Docker daemon to build, pull, run, inspect, and clean up Harbor resources, but that access is outside the trial and must be explicitly recorded.
 - The agent user and effective working directory are recorded.
 - CPU, memory, storage, timeout, and network policy are applied. A reported-but-unenforced limit is not qualification evidence.
 - `network_mode` is explicit and never inherited from Harbor's public default.
@@ -183,13 +183,19 @@ The committed runtime payload for the first D7Y case is exactly: `SKILL.md`, `in
 
 ### Qualification outcome
 
-The qualification result is one of:
+Gate A outcomes are:
 
-- `qualified` — all required foundation gates passed;
-- `qualified-with-bounded-evidence` — execution and outcome evidence work, but invocation or another non-required signal is unavailable;
-- `not-qualified` — the environment, treatment boundary, or evidence contract cannot be trusted.
+- `foundation-qualified` — Harbor task, network, storage, verifier, artifact, and secret-canary controls passed;
+- `foundation-blocked` — a required provider capability, such as Docker storage enforcement, is unavailable and must be supplied before qualification;
+- `foundation-not-qualified` — the environment, treatment boundary, or evidence contract cannot be trusted.
 
-Only `qualified` supports the full D7Y invocation contract. No qualification outcome promotes a skill or establishes stable improvement.
+Gate B outcomes are:
+
+- `claude-qualified` — the approved Claude/API profile, execution, route evidence, and required observability passed;
+- `claude-qualified-with-bounded-evidence` — execution and scoped outcome evidence work, but invocation or another explicitly non-required signal is unavailable;
+- `claude-not-qualified` — Claude execution, route, treatment, or evidence cannot be trusted.
+
+Only `claude-qualified` supports the full D7Y invocation contract. No qualification outcome promotes a skill or establishes stable improvement.
 
 ## Claude configuration and API boundary
 
@@ -257,7 +263,7 @@ Support API topologies progressively:
 - **Foundation — external proxy/custom endpoint:** the agent reaches an approved HTTPS endpoint through an exact Harbor allowlist; the proxy handles upstream authentication and any model translation. This is the first topology to qualify because Harbor directly supports the endpoint allowlist and task environment injection.
 - **Follow-on — Docker Compose sidecar:** a Compose sidecar receives agent requests on an internal service name. Sidecar configuration and upstream identity are hashed and recorded, credentials remain runtime-only, and direct agent-to-upstream access must be tested separately. This topology is Docker-specific; Harbor documents that many cloud providers do not support Compose environments.
 
-The first qualification must prove the external proxy/custom endpoint topology with a harmless request and a known response. It must record the API profile, route identity, proxy request record, requested model, effective model/provider when available, and authentication key names. It must fail with `evidence_error` or `agent_error` when the route cannot be established, and with `pair_error` when baseline and treatment receive different API profiles. Effective model/provider is useful provenance, but route evidence comes from the proxy or endpoint boundary, not from the final response.
+The first Gate B credentialed qualification must prove the external proxy/custom endpoint topology with a harmless request and a known response. It must record the API profile, route identity, proxy request record, requested model, effective model/provider when available, and authentication key names. It must fail with `evidence_error` or `agent_error` when the route cannot be established, and with `pair_error` when baseline and treatment receive different API profiles. Effective model/provider is useful provenance, but route evidence comes from the proxy or endpoint boundary, not from the final response.
 
 ## Progressive implementation sequence
 
@@ -269,13 +275,13 @@ Record the pinned Harbor version and invocation, Python version, Docker client a
 
 **Exit evidence:** a committed implementation prompt can point at this plan, the main branch is the source base, and the chosen Harbor/Docker posture is reproducible by a developer.
 
-### Phase 0A — Qualify Harbor without Claude credentials
+### Phase 0A — Probe Harbor without Claude credentials
 
-Build and run a disposable task using Harbor `0.20.0` and local Docker only. Use a no-op or deterministic test agent for the foundation probe; do not require Claude authentication. Prove the exact `task.toml` fields used by this plan: environment and phase network policies, `environment.env` interpolation with a non-secret sentinel, separate verifier configuration, declared artifacts, and the selected resource controls. Require storage enforcement, not merely a reported storage request. Run positive and deliberately broken variants and classify each failure.
+Build and run a disposable task using Harbor `0.20.0` and local Docker only. Use a no-op or deterministic test agent for the foundation probe; do not require Harbor-trial Claude authentication. Prove the exact `task.toml` fields used by this plan: environment and phase network policies, `environment.env` interpolation with a non-secret sentinel, separate verifier configuration, declared artifacts, and the selected resource controls. Test storage enforcement explicitly. If Docker reports storage without enforcing it, record `environment_error` as a foundation blocker; do not call the probe qualified. Run positive and deliberately broken variants and classify each failure.
 
 Add a deterministic secret-canary check: inject a known synthetic sentinel only for the foundation probe, scan task files, manifests, logs, and collected artifacts for the sentinel, and fail closed if it appears where it should not. This verifies redaction and collection behavior without using a real credential.
 
-**Exit evidence:** a Harbor `0.20.0` capability record, valid task fixtures, positive and negative results, verified storage boundary, separate-verifier evidence, and a clean secret-canary report. If local Docker cannot enforce storage or the network boundary, Gate A is not qualified.
+**Exit evidence:** a Harbor `0.20.0` capability record, valid task fixtures, positive and negative results, separate-verifier evidence, and a clean secret-canary report. The result is `foundation-qualified` only when storage and network boundaries are enforced. Otherwise return `foundation-blocked` with the missing external quota/provider named; never report a successful foundation qualification.
 
 ### Phase 1 — Prove Harbor isolation with a disposable task
 
