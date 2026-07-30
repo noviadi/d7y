@@ -84,12 +84,21 @@ def _run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess:
     )
 
 
-def _stderr_tail(text: str, lines: int = 5) -> list[str]:
-    """Return the last few non-empty stderr lines, redacted of the live canary token."""
+def _stderr_tail(text: str, lines: int = 5, full_token: str | None = None) -> list[str]:
+    """Return the last few non-empty stderr lines, redacted of the live canary token.
+
+    If ``full_token`` is provided, redact the complete token including its random
+    suffix. Otherwise redact only the static marker prefix.
+    """
     tail: list[str] = []
     for line in text.strip().splitlines()[-lines:]:
-        for marker in SECRET_VALUE_MARKERS:
-            line = line.replace(marker, "<redacted-canary-token>")
+        # Full redaction if we have the complete canary token
+        if full_token and full_token in line:
+            line = line.replace(full_token, "<redacted-canary-token>")
+        else:
+            # Fall back to prefix-only redaction
+            for marker in SECRET_VALUE_MARKERS:
+                line = line.replace(marker, "<redacted-canary-token>")
         if line.strip():
             tail.append(line.strip())
     return tail
@@ -99,7 +108,13 @@ def inspect_env(image: str) -> list[str]:
     proc = _run(["docker", "image", "inspect", image, "--format", "{{json .Config.Env}}"])
     if proc.returncode != 0:
         raise RuntimeError(f"docker inspect failed for {image}: {proc.stderr.strip()}")
-    return json.loads(proc.stdout.strip()) if proc.stdout.strip() else []
+    env_json = proc.stdout.strip()
+    if not env_json:
+        return []
+    try:
+        return json.loads(env_json)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"docker inspect returned malformed JSON for {image}: {exc}") from exc
 
 
 def scan_image(image: str) -> dict:
@@ -112,15 +127,23 @@ def scan_image(image: str) -> dict:
     find_expr = " -o ".join(f"-name '{name}'" for name in FORBIDDEN_FILES)
     grep_expr = " ".join(f"-e '{pat}'" for pat in FORBIDDEN_CONTENT + SECRET_VALUE_MARKERS)
     identity_test = " || ".join(f"test -e '{p}'" for p in AGENT_IDENTITY_PATHS)
+
+    # Run as root for inspection (preserves the image's configured non-root runtime user)
+    # This is scanner privilege only; we do not change the image recipe or runtime posture.
+    # Make each internal command fail closed and report its status explicitly.
     script = (
-        "found_files=\"$(find / -xdev \\( " + find_expr + " \\) 2>/dev/null)\"; "
+        "set -e; "  # Exit on any command failure
+        "find_exit=0; "
+        "found_files=\"$(find / -xdev \\( " + find_expr + " \\) 2>&1)\" || find_exit=$?; "
+        "grep_exit=0; "
         "found_content=\"$(grep -rI --exclude-dir=proc --exclude-dir=sys "
-        "--exclude-dir=dev " + grep_expr + " / 2>/dev/null | head -50)\"; "
+        "--exclude-dir=dev " + grep_expr + " / 2>&1 | head -50)\" || grep_exit=$?; "
         "if " + identity_test + "; then identity=present; else identity=absent; fi; "
-        "printf 'FILES\\n%s\\nCONTENT\\n%s\\nIDENTITY\\n%s\\n' "
-        "\"$found_files\" \"$found_content\" \"$identity\""
+        # Report the exit status of each internal traversal (exit 1 from grep means no match, which is valid)
+        "printf 'FILES\\n%s\\nCONTENT\\n%s\\nIDENTITY\\n%s\\nFIND_EXIT\\n%d\\nGREP_EXIT\\n%d\\n' "
+        "\"$found_files\" \"$found_content\" \"$identity\" \"$find_exit\" \"$grep_exit\""
     )
-    proc = _run(["docker", "run", "--rm", "--entrypoint", "sh", image, "-c", script])
+    proc = _run(["docker", "run", "--rm", "--user", "0:0", "--entrypoint", "sh", image, "-c", script])
     scan_command_failed = proc.returncode != 0
     env_inspect_error: str | None = None
     try:
@@ -132,19 +155,50 @@ def scan_image(image: str) -> dict:
         scan_command_failed = True
 
     stdout = proc.stdout
+    # Validate the output protocol is complete and well-formed
+    protocol_error = None
+    required_sections = ["FILES", "CONTENT", "IDENTITY", "FIND_EXIT", "GREP_EXIT"]
+    for section in required_sections:
+        if section not in stdout:
+            protocol_error = f"missing required section: {section}"
+            scan_command_failed = True
+            break
+
+    # Extract internal command exit codes for failure classification
+    find_exit = 0
+    grep_exit = 0
+    try:
+        find_exit = int(_section(stdout, "FIND_EXIT")[0]) if "FIND_EXIT" in stdout else 0
+        grep_exit = int(_section(stdout, "GREP_EXIT")[0]) if "GREP_EXIT" in stdout else 0
+    except (ValueError, IndexError):
+        protocol_error = "malformed or missing FIND_EXIT/GREP_EXIT values"
+        scan_command_failed = True
+
+    # Classify internal traversal failures
+    # find_exit > 0: failed to traverse filesystem
+    # grep_exit > 1: failed to search content (exit 1 means no match, which is valid)
+    internal_traversal_failed = (find_exit > 0) or (grep_exit > 1)
+
+    if internal_traversal_failed:
+        scan_command_failed = True
+
     env_secret_hits = [e for e in env if any(m in e for m in SECRET_VALUE_MARKERS)]
     env_token_hits = [e for e in env if e.startswith("ANTHROPIC_AUTH_TOKEN=") and e.split("=", 1)[1] != ""]
     return {
         "image": image,
-        "forbidden_files": _section(stdout, "FILES"),
-        "forbidden_content": _section(stdout, "CONTENT"),
-        "identity_state_present": _flag(stdout, "IDENTITY"),
+        "forbidden_files": _section(stdout, "FILES") if not protocol_error else [],
+        "forbidden_content": _section(stdout, "CONTENT") if not protocol_error else [],
+        "identity_state_present": _flag(stdout, "IDENTITY") if not protocol_error else False,
         "env_secret_hits": env_secret_hits,
         "env_token_value_hits": env_token_hits,
         "scan_command_failed": scan_command_failed,
         "scan_exit_code": proc.returncode,
         "scan_stderr_tail": _stderr_tail(proc.stderr) if scan_command_failed else [],
         "env_inspect_error": env_inspect_error,
+        "protocol_error": protocol_error,
+        "find_exit": find_exit,
+        "grep_exit": grep_exit,
+        "internal_traversal_failed": internal_traversal_failed,
     }
 
 
@@ -234,7 +288,7 @@ def synthetic_secret_canary(dockerfile: Path) -> dict:
         )
         if build.returncode != 0:
             status = "build_failure"
-            build_stderr_tail = _stderr_tail(build.stderr)
+            build_stderr_tail = _stderr_tail(build.stderr, full_token=token)
         else:
             scan_result = scan_image(tag)
             scan_status = classify_scan(scan_result)
@@ -254,7 +308,7 @@ def synthetic_secret_canary(dockerfile: Path) -> dict:
 
         rmi = _run(["docker", "rmi", "-f", tag])
         if rmi.returncode != 0:
-            cleanup_error = _stderr_tail(rmi.stderr)
+            cleanup_error = _stderr_tail(rmi.stderr, full_token=token)
             status = "cleanup_failure"
 
     return {
