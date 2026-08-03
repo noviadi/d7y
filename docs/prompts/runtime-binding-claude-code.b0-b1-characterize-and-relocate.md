@@ -1,5 +1,5 @@
 ---
-status: draft
+status: committed
 plan: docs/plans/runtime-binding-claude-code.md
 execution: b0-b1-characterize-and-relocate
 executor: claude-code
