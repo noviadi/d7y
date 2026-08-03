@@ -660,3 +660,77 @@ tracked — `evals/.gitignore` ignores `runs/`): `manifest.json`, `checks.json`,
 stream-json transcript at `/tmp/d7y-b3-positive-transcript.jsonl`. This is the
 one real captured run the completion boundary requires; its durable retention
 path is left to the eval-harness work per repo policy.
+
+## Implementation feedback — B4 (execution: b4-document-dev-install)
+
+Executor: claude-code (Claude Code 2.1.218), driven interactively from the main
+checkout at the human's direction. Branch: `work/runtime-binding-b4`, based on
+the approved `work/runtime-binding-b3` (linear chain; both integrate via
+fast-forward in order). Base/starting HEAD: `22c0986` (B3).
+
+### Files changed
+
+- `DEVELOPMENT.md` — added `./d7y dev install <directory>` to the Local CLI
+  command list, and a new **"Dev-install runtime binding (Claude Code)"** section
+  covering: the install procedure; what it creates (symlinked skills/exec/checker,
+  copied runtime `AGENTS.md`, `CLAUDE.md` symlink, placed `initiatives/README.md`);
+  `d7y` reachability via PATH; workspace trust (interactive dialog +
+  `/reload-plugins` vs. headless `-p` auto-trust from B3); idempotency and safety
+  (clobber refusal, self-install refusal); supported version (2.1.218); the
+  absolute-symlink requirement; and an explicit "what this does not establish"
+  list (dev runtime only; not production/portable/hardened; bypass-permissions
+  caveat from B3).
+- `docs/plans/runtime-binding-claude-code.md` — this feedback section.
+
+No source skill, constitution, canon, schema, `d7y`, or install change. B4 is
+documentation only.
+
+### Exit gate evidence
+
+- Another contributor can run the documented procedure end to end: a fresh
+  `./d7y dev install /tmp/d7y-b4-doc-verify`, then `cd`, `PATH` prepend, and
+  `d7y initiatives list` returned a valid inventory (rc 0) — confirming the doc
+  matches the mechanics.
+- All inline links resolve: `agents/runtime-AGENTS.md`,
+  `docs/plans/runtime-binding-claude-code.md`, and the existing charter/
+  principles/agents links.
+- The trust guidance reflects B3's behavioral finding (headless `-p` auto-trusts;
+  interactive needs the dialog + `/reload-plugins`), so the doc is not
+  aspirational — it records the observed mechanism.
+
+### Checks and results
+
+- `./d7y dev install /tmp/d7y-b4-doc-verify` → rc 0; `d7y initiatives list`
+  in-target → valid, rc 0.
+- `python3 evals/validate_skill_evals.py` → VALID both suites, rc 0.
+- `./d7y validate` → evals VALID; "Initiatives: valid (0 found)", rc 0.
+- `git diff --check` → clean.
+
+### Deviations
+
+- B4 was branched from the approved-but-unmerged `work/runtime-binding-b3`
+  (rather than `main`) so the B3 and B4 plan-feedback sections integrate as a
+  linear fast-forward chain (B3 then B4). No `main` commits.
+- The `status` frontmatter of this plan was left at `todo`; flipping it to `done`
+  is a consequential signal (it unblocks the gated eval-harness plan) and is
+  returned for the human rather than set unilaterally — see below.
+
+### Residual risks / decisions returned
+
+- **Plan status flip.** With B0–B4 complete, this plan's completion boundary is
+  met (D7Y runs as a real Claude Code binding via `d7y dev install`; skills load
+  and trigger in a real session; `d7y` is reachable in-session; one real captured
+  run exists and passes the deterministic checker; the dev-install path and
+  limitations are documented). Recommend the human set `status: done` on
+  integration. This **unblocks — but does not perform** the iterative skill eval
+  harness (its Stage 0 still requires real use, and Stage 1a is the next
+  executable-now work).
+- **Integration order.** Integrate `work/runtime-binding-b3` first (ff), then
+  `work/runtime-binding-b4` (ff). Both are doc/feedback-only on top of `main`
+  (`7bec5c1`); no code divergence.
+- **Captured-run durability** (carried from B3): the B3 run is on disk under the
+  gitignored `evals/runs/`; durable retention is a decision for the eval-harness
+  work, not B4.
+- **Interactive (TUI) parity** (carried from B3): the documented interactive
+  trust path is the designed mechanism but was not separately re-run in B4;
+  headless proof (B3) is the behavioral evidence.
