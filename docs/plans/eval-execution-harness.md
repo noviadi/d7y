@@ -1,12 +1,24 @@
 ---
 title: Harbor-Native Skill Eval Execution Foundation
 type: feat
-status: todo
+status: superseded
 createdAt: 2026-07-30
-updatedAt: 2026-07-30
+updatedAt: 2026-08-03
+supersededBy: docs/plans/iterative-skill-eval-harness.md
 ---
 
 # Harbor-Native Skill Eval Execution Foundation
+
+> **Superseded 2026-08-03** by
+> [`docs/plans/iterative-skill-eval-harness.md`](./iterative-skill-eval-harness.md).
+> The replacement retains this plan's eval thinking (paired baseline/treatment,
+> layered evidence, canonical failure classes, claim-scoped validity) but
+> replaces its execution path: isolation is matched to each skill's blast
+> radius, Harbor and provider hardening are deferred until a concrete skill
+> requires them, and a thin deterministic runner produces the first comparative
+> evidence. This plan remains as historical evidence of the Harbor posture and
+> the three-questions-one-gate problem its successor explicitly separates. Do
+> not execute its outstanding phases.
 
 ## Summary
 
