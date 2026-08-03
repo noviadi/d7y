@@ -1,5 +1,5 @@
 ---
-status: draft
+status: committed
 plan: docs/plans/runtime-binding-claude-code.md
 execution: b2-dev-install
 executor: claude-code
