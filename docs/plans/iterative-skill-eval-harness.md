@@ -293,3 +293,98 @@ Stages 1b, 2, and 3 remain gated and are not complete. The foundation proves a
 bounded blast-radius-matched grading path for the deterministic skill. It does
 not prove containerized isolation, paired comparison, statistical stability,
 or that any skill is `evaluated`.
+
+## Implementation feedback — Stage 1a (execution: stage-1a-workspace-grader)
+
+Executor: claude-code (Claude Code 2.1.218), driven interactively from the main
+checkout at the human's direction. Branch:
+`work/iterative-eval-harness-stage-1a` (sibling worktree). Base/starting HEAD:
+`cb9a16b` (runtime-binding `done`).
+
+### Files changed
+
+- `evals/run/workspace_grader.py` (new) — the capture-grader: `grade()` reuses
+  `inventory()` by import; `capture()` (copy-only, never mutates input);
+  `emit()` → `checks.json` + `summary.md`; CLI with auto-incrementing
+  `evals/runs/<skill>/iteration-<N>/` default output.
+- `evals/run/test_workspace_grader.py` (new) — 10 focused deterministic
+  self-tests (no live agent).
+- `evals/run/README.md` (new) — what it is, usage, scope limits.
+- `.gitignore` (new, root) — `__pycache__/` + `*.pyc`; Python bytecode regenerates
+  on every verification run and was polluting the worktree (no root `.gitignore`
+  existed). Minimal hygiene fix; see Deviations.
+- `docs/plans/iterative-skill-eval-harness.md` — this feedback section.
+
+No edit to `scripts/check-initiatives.py`, the schema, the skills, or canon
+(the hard rules held).
+
+### How `inventory()` is reused (no edit to the checker)
+
+`scripts/check-initiatives.py` is hyphen-named and cannot be `import`ed. The
+grader loads `inventory()` from its file path via `importlib.util.spec_from_file_location`,
+adds no parsing/validation of its own, and only layers + reports the checker's
+decision. REPO/checker paths resolve from `__file__` (two parents up), so the
+grader works from any CWD.
+
+### Outcome mapping and failure classes
+
+`grade()` maps the deterministic inventory to the `outcome` dimension and a
+`failure_class`: clean inventory → `pass` / `none`; invalid inventory → `fail` /
+`assertion_fail`; no `initiatives/` dir → `ungradable` / `ungradable`; missing
+workspace or `inventory()` exception → `ungradable` / `evidence_error`. Only
+`outcome` carries evidence; `process`, `invocation`, `quality`, `efficiency`,
+`environment`, `pair` are explicitly `N/A` (the other canonical failure classes —
+`environment_error`, `pair_error`, `agent_error`, `verifier_error` — are N/A in
+1a and noted).
+
+### Checks and results
+
+- `python3 evals/run/test_workspace_grader.py` → 10/10 passed: valid→`pass`/
+  `none`; missing required heading, non-canonical slug, bad ISO date, and
+  angle-bracket template placeholders → `fail`/`assertion_fail` with the right
+  per-record errors; no-`initiatives/`→`ungradable`; missing workspace→
+  `evidence_error`; `capture()` does not mutate input (sha256 tree compare);
+  `emit()` writes `checks.json`+`summary.md`; provenance recorded.
+- `python3 evals/validate_skill_evals.py` → VALID both suites, rc 0.
+- `./d7y validate` → evals VALID; "Initiatives: valid (0 found)", rc 0.
+- `git diff --check` → clean.
+
+### Exit gate — one real captured run graded and retained
+
+The B3 target workspace (`/tmp/d7y-b3-20260803-125150`, the
+`solar-flashlight-for-dark-caves` initiative produced by the headless binding
+smoke) was still present and graded:
+`python3 evals/run/workspace_grader.py /tmp/d7y-b3-... --transcript /tmp/d7y-b3-positive-transcript.jsonl`
+→ `pass`, `count=1`, `failure_class=none`. Retained (on disk; gitignored per
+`evals/.gitignore` `runs/`) at `evals/runs/starting-initiatives/iteration-1/`:
+`checks.json`, `summary.md`, the captured initiative, and the B3 transcript.
+
+### Deviations
+
+- Added a root `.gitignore` for `__pycache__/` + `*.pyc`. Not in the original
+  "three files" scope, but required for the clean-worktree invariant: running the
+  grader self-tests or `validate_skill_evals.py` regenerates bytecode under
+  `evals/run/` and `scripts/`, and the repo had no root `.gitignore`. Minimal and
+  correct; flagged for review.
+- The real captured run reuses the B3 target rather than a freshly produced run.
+  B3 already proved the binding behaviorally; re-grading the same workspace is the
+  Stage 1a exit-gate intent (grade one real workspace), not a re-run of the agent.
+
+### Residual risks / decisions returned
+
+- **Run retention is on-disk, not in git** (carried forward from B3):
+  `evals/.gitignore` ignores `runs/` by canon policy ("raw run artifacts kept
+  outside the source tree by default"). The graded run exists at
+  `evals/runs/starting-initiatives/iteration-1/` in this worktree but is not
+  tracked; durable cross-session retention of graded runs is a decision for a
+  later eval-harness stage.
+- **Provenance via `git rev-parse`.** Commit fields are `unknown` outside a git
+  checkout (graceful fallback). In-worktree grading records `cb9a16b` for both
+  d7y and skill commits (skills move with the repo).
+- **Stage 0 / 1b still gated.** This is a capture-grader only — no failure corpus,
+  no paired baseline/treatment, no pass-rate, no maturity. The next executable
+  work toward 1b is Stage 0 failure capture (real use), which the now-complete
+  runtime binding permits.
+- **No `d7y eval` façade command.** The grader is directly executable
+  (`python3 evals/run/workspace_grader.py`), matching `validate_skill_evals.py`;
+  a façade command remains deferred.
