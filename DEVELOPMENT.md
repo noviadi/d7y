@@ -5,7 +5,7 @@ This guide covers the repository surfaces and local commands used to develop D7Y
 ## Repository layout
 
 - [`docs/`](./docs/) contains the charter, principles, plans, prompts, and evaluation contract.
-- [`skills/`](./skills/) contains reusable discovery procedures and their eval suites.
+- [`agents/skills/`](./agents/skills/) contains reusable discovery procedures and their eval suites.
 - [`evals/`](./evals/) contains shared schemas and deterministic eval tooling.
 - [`initiatives/`](./initiatives/) defines the durable unit and organization of discovery work.
 - [`scripts/`](./scripts/) contains deterministic repository-development launchers.
