@@ -89,7 +89,7 @@ An initiative represents a problem, opportunity, or idea under investigation. It
 
 A session is one episode of work. The initiative preserves enough meaning for future agents and sessions to continue without requiring the user to reconstruct its history.
 
-Canonical initiative state lives under the repository-root `initiatives/` directory; reusable discovery capabilities live under `skills/`.
+Canonical initiative state lives under the repository-root `initiatives/` directory; reusable discovery capabilities live under `agents/skills/`.
 
 Intent is expected to begin incomplete. Agents may challenge, clarify, and propose interpretations of it, but they must not silently decide the destination.
 

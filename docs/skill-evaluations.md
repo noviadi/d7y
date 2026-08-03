@@ -31,7 +31,7 @@ The first stages establish execution compatibility and evidence integrity. They 
 Authored eval definitions live with the skill:
 
 ```text
-skills/<skill>/
+agents/skills/<skill>/
 ├── SKILL.md
 ├── scripts/                    # deterministic capability tools, when needed
 └── evals/
