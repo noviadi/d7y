@@ -150,7 +150,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("paths", nargs="*", type=Path, help="evals.json files; defaults to every skill suite")
     args = parser.parse_args()
-    paths = args.paths or sorted(Path("skills").glob("*/evals/evals.json"))
+    paths = args.paths or sorted(Path("agents/skills").glob("*/evals/evals.json"))
     if not paths:
         print("No skill eval suites found", file=sys.stderr)
         return 1
