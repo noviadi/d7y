@@ -358,3 +358,169 @@ root, which uses the separate `agents/runtime-AGENTS.md`.
 - **Static validation only.** B0/B1 were verified by inspection plus deterministic
   validators. Behavioral binding (real session skill load + trigger + `d7y`
   in-session + a valid artifact) is B2/B3 and has not been run.
+
+## Implementation feedback — B2 (execution: b2-dev-install)
+
+Executor: claude-code (Claude Code 2.1.218). Branch: `work/runtime-binding-b2`.
+Prompt: `docs/prompts/runtime-binding-claude-code.b2-dev-install.md` @ 4c42253.
+Base/starting HEAD: 4c42253.
+
+### Files changed
+
+- `d7y` (façade) — added the `dev install <directory>` dispatch and one usage
+  line (5 lines total).
+- `scripts/install-runtime.sh` (new) — the deterministic install helper.
+- `scripts/test_install_runtime.sh` (new) — focused fixtures (layout, in-target
+  command resolution, idempotency, clobber refusal, guidance, self-install
+  refusal).
+- `docs/plans/runtime-binding-claude-code.md` — this feedback section.
+
+### Façade dispatch approach
+
+Mirrored `dev delegate` exactly: `install) shift; exec scripts/install-runtime.sh "$@" ;;`,
+plus one `dev install <directory>` line in `usage()`. The façade stays thin: all
+argument parsing, target resolution, clobber logic, and materialization live in
+`scripts/install-runtime.sh`. As with other `d7y dev` commands, a relative
+`<directory>` resolves from the repository root (the façade `cd`s to `ROOT`
+before dispatch, matching `dev delegate`/`dev plans`).
+
+### Copy-vs-symlink for `d7y` and the checker
+
+**Decision: symlink both** `.d7y/d7y` and `.d7y/scripts/check-initiatives.py`,
+with absolute targets into this repository.
+
+- Consistent with the dev-install live-edit intent — the skills are symlinked
+  "so source edits are live in the runtime," and the executable/checker get the
+  same treatment. A contributor editing the repo's `d7y` or checker sees the
+  change live in every installed runtime.
+- Path-resolution consequence (recorded, not a defect): the façade resolves
+  `ROOT` via `readlink -f "${BASH_SOURCE[0]}"`, so a symlinked `.d7y/d7y`
+  resolves `ROOT` to **this repository** and finds `scripts/check-initiatives.py`
+  there. The placed `.d7y/scripts/check-initiatives.py` symlink is therefore
+  layout-consistent (the documented path exists and resolves to the same source)
+  but shadowed at runtime — the façade reaches the checker via `ROOT`, not via
+  the `.d7y/scripts/` path. Functionally identical; the checker has no
+  dependencies and no state.
+- A future copy-based production install would resolve `ROOT` to `.d7y/` and use
+  the placed checker; both designs work.
+
+### PATH decision
+
+**Option (a): emit the access method.** The install prints the exact way to make
+`d7y` reachable in-session (the skills invoke bare `d7y`):
+
+```sh
+cd <target>
+export PATH="$PWD/.d7y:$PATH"
+d7y initiatives list
+```
+
+Chosen over option (b) (linking `d7y` into a PATH-provided directory) because
+(b) would be a repo-external, shared-resource mutation outside the install's
+namespace — the constitution warns against repository-global or shared-resource
+changes outside scope — and the target PATH directory is environment-specific.
+Option (a) keeps every artifact inside the target `<directory>/.d7y/` namespace
+and leaves reachability silent nowhere. The guidance is emitted on every install
+and asserted by the fixtures.
+
+### Workspace-trust guidance
+
+Emitted on install (from the B0 finding): the target workspace must be trusted
+in Claude Code for project-scope skills (`.claude/skills/<name>`) to load; in an
+untrusted workspace the skills are logged as "not loaded" until the trust dialog
+is accepted and `/reload-plugins` runs. Behavioral confirmation is B3.
+
+### Idempotency and clobber-refusal evidence
+
+- **Idempotent.** `ln -sfn` re-links every symlink (handles an existing
+  symlink-to-directory correctly via `-n`); `cp -f` refreshes the two copied
+  artifacts (`AGENTS.md`, `initiatives/README.md`). The fixture captures a
+  snapshot (readlink outputs + `cksum` of the copied files) before and after a
+  second `d7y dev install <same-target>` and asserts they are identical.
+- **Clobber refusal.** Before writing anything, the helper scans
+  `target/initiatives/*` (with `dotglob`) for any entry other than `README.md`.
+  If one exists, it exits 2 with a clear message naming the offending path. The
+  fixture seeds `initiatives/alpha/initiative.md`, runs install, asserts a
+  non-zero exit, asserts the seeded file is intact, and asserts `AGENTS.md` is
+  unchanged (nothing destroyed — the guard runs before any write).
+- **Self-install refusal.** Added a guard: `target == SOURCE_ROOT` is refused
+  (exit 2), so install can never overwrite the repository's own root
+  `AGENTS.md`/`CLAUDE.md` symlinks or scatter runtime artifacts into the source
+  checkout. Asserted by a fixture.
+
+### Dry-run example (produced layout)
+
+`d7y dev install /tmp/demo` prints the layout below and the PATH/trust guidance.
+Verified: `.claude/skills/starting-initiatives/SKILL.md` resolves through both
+symlinks to this repo's
+`agents/skills/starting-initiatives/SKILL.md`; and from the target workspace,
+`d7y initiatives list --json` returns `{"valid": true, "count": 0, ...}` (exit 0)
+and `d7y initiatives check` prints `Initiatives: valid (0 found)` (exit 0) —
+both via `--root` and via upward discovery from inside the target.
+
+```text
+<target>/
+├── .d7y/
+│   ├── skills/starting-initiatives      -> <repo>/agents/skills/starting-initiatives   (symlink)
+│   ├── skills/writing-great-skills      -> <repo>/agents/skills/writing-great-skills   (symlink)
+│   ├── d7y                              -> <repo>/d7y                                  (symlink)
+│   └── scripts/check-initiatives.py     -> <repo>/scripts/check-initiatives.py         (symlink)
+├── .claude/
+│   ├── skills/starting-initiatives      -> ../../.d7y/skills/starting-initiatives      (symlink)
+│   └── skills/writing-great-skills      -> ../../.d7y/skills/writing-great-skills      (symlink)
+├── AGENTS.md                            (copied from agents/runtime-AGENTS.md)
+├── CLAUDE.md                            -> AGENTS.md                                   (symlink)
+└── initiatives/
+    └── README.md                        (copied from initiatives/README.md)
+```
+
+### Checks and results
+
+- `scripts/test_install_runtime.sh` → "install-runtime fixtures passed", rc 0
+  (layout, both-symlink resolution, `initiatives list`/`check` via `--root` and
+  via discovery, idempotency snapshot, clobber refusal + data intact, PATH and
+  trust guidance emitted, self-install refusal).
+- `python3 evals/validate_skill_evals.py` → VALID for both suites, rc 0.
+- `./d7y validate` → evals VALID; "Initiatives: valid (0 found)", rc 0.
+- `scripts/test_delegate_prompt_frontmatter.sh` → passed, rc 0 (no regression to
+  the `dev` dispatch or façade).
+- `./d7y dev install --help` → usage printed, rc 0.
+- `git diff --check` → clean.
+
+### Deviations
+
+- Added the `target == SOURCE_ROOT` self-install refusal. Not explicitly
+  requested, but it is the minimal guard that upholds "nothing is destroyed"
+  against the catastrophic footgun of installing D7Y into its own source tree.
+- No other deviations from the writable scope. Stage B3 (live nested session)
+  was not run, per scope.
+
+### Residual risks / decisions returned
+
+- **Refresh gap for populated runtimes.** Per the literal spec ("rejected with a
+  non-zero exit ... nothing is destroyed"), install refuses entirely once
+  `initiatives/` holds data beyond `README.md`. A contributor who later edits
+  the repo (e.g. adds a skill) cannot refresh that populated runtime via install
+  without moving the initiative data aside first. Decision returned: is
+  full-refusal correct, or should install refresh only the non-initiative
+  artifacts (skills/executable/checker symlinks, `AGENTS.md`, `CLAUDE.md`) while
+  still refusing to touch `initiatives/` data? Implemented as full refusal to
+  match the wording and maximize data safety; flagging the usability tradeoff.
+- **PATH is guidance-only.** Bare `d7y` works only after the user/agent prepends
+  `.d7y/` to PATH (or invokes `.d7y/d7y` directly). The `starting-initiatives`
+  skill invokes bare `d7y initiatives ...`, so a B3 session must set PATH before
+  the skill runs. If B3 finds this too fragile, option (b) needs an
+  environment-specific decision (which PATH dir, accepting a repo-external
+  mutation).
+- **`initiatives/README.md` is refreshed unconditionally** on every install.
+  Install assumes that path is D7Y's contract; a target that reused the exact
+  path for other content would be overwritten. Acceptable for the fresh-target
+  use case (the intended one); noted as an edge case.
+- **`dev plans`/`validate` from a target workspace** resolve `ROOT` to the repo
+  root (symlinked `d7y`), so `d7y dev plans` lists the repo's plans, not the
+  target's. Not a runtime-binding concern (only `initiatives list/check` are
+  runtime-user-facing); noted for completeness.
+- **Behavioral binding is B3.** Mechanics verified here (layout, symlink
+  resolution, in-target `d7y initiatives`, idempotency, clobber refusal) are not
+  a behavioral binding — skill load + trigger + a valid artifact in a real
+  session remain B3.

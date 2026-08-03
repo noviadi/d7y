@@ -43,6 +43,7 @@ Compatibility / development commands:
   validate initiatives [opts]  Validate initiatives (forwards --root, --json).
   dev plans [--all|--done]     List active, all, or completed plans.
   dev delegate [opts] <prompt> Delegate a Claude Code implementation handoff.
+  dev install <directory>      Materialize a D7Y runtime in <directory>.
 
 Run "d7y initiatives list --help" or "d7y initiatives check --help" for leaf
 options. The underlying scripts remain directly executable.
@@ -313,6 +314,10 @@ case "${1:-}" in
       delegate)
         shift
         exec scripts/delegate-claude.sh "$@"
+        ;;
+      install)
+        shift
+        exec scripts/install-runtime.sh "$@"
         ;;
       *)
         die_usage "unknown dev subcommand: ${1:-}"
