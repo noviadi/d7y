@@ -524,3 +524,139 @@ both via `--root` and via upward discovery from inside the target.
   resolution, in-target `d7y initiatives`, idempotency, clobber refusal) are not
   a behavioral binding — skill load + trigger + a valid artifact in a real
   session remain B3.
+
+## Implementation feedback — B3 (execution: b3-real-run-smoke, headless)
+
+Executor: claude-code (Claude Code 2.1.218), driven interactively from the main
+checkout per the human's direction (not via `scripts/delegate-claude.sh`).
+Branch: `work/runtime-binding-b3` (sibling worktree). Base/starting HEAD:
+`7bec5c1` (post-B2 `main`). Stage B4 (document dev-install) remains open.
+
+### Headless workspace-trust mechanism (the B0/B3 open question — resolved)
+
+Empirically, **headless `claude -p` loads project-scope `.claude/skills/<name>`
+skills with no interactive trust dialog** — the skill was available and triggered
+on the first run, in a never-before-trusted `/tmp` workspace. This confirms the
+`claude --help` note ("the workspace trust dialog is skipped when Claude is run
+in non-interactive mode") and contradicts the doc-based reading that project
+skills still do not load from untrusted workspaces in `-p`: in non-interactive
+mode the dialog is skipped and the workspace is treated as trusted. No settings
+key, `--trust` flag, or one-time interactive acceptance was required. (The
+`--dangerously-skip-permissions` flag was used only to let the headless session
+write files and run `d7y` without permission prompts; per the guide reference it
+does not itself govern workspace trust, and the load occurred independent of it.)
+
+### Files changed
+
+- `evals/runs/starting-initiatives/iteration-1/` (new) — the captured real run:
+  `manifest.json` (provenance + invocation), `checks.json` (the deterministic
+  `d7y initiatives check --json` result), `summary.md`, `transcript-excerpt.json`
+  (curated Skill + `d7y` tool-use events + result), and
+  `artifacts/initiative.md` (the produced initiative, verbatim).
+- `docs/plans/runtime-binding-claude-code.md` — this feedback section.
+
+No source skill, constitution, canon, schema, or `d7y`/install change. B4 (docs)
+is not in this round.
+
+### How the smoke was run
+
+- Installed a fresh target **outside** the repo:
+  `d7y dev install /tmp/d7y-b3-20260803-125150` from the b3 worktree.
+- Made `d7y` reachable per B2's PATH decision: `export PATH="$PWD/.d7y:$PATH"`.
+- Positive: `claude -p "<synthetic intent>" --dangerously-skip-permissions
+  --disallowed-tools "WebSearch WebFetch" --output-format stream-json --verbose`,
+  CWD = target. Intent was deliberately absurd and self-declared synthetic
+  (workbench-development mode); network disallowed.
+- Negative control: same harness, a fresh target, an unrelated prompt ("explain a
+  Python decorator").
+
+### Observed results
+
+**Positive** — every dimension held:
+
+- **Load:** project-scope `starting-initiatives` was available in the headless
+  session (it could not have triggered otherwise).
+- **Trigger:** a `Skill` tool-use `{"skill":"starting-initiatives"}` fired
+  (captured in `transcript-excerpt.json`).
+- **Reach:** the session ran `d7y initiatives list --root <absolute-target>
+  --json` and then `d7y initiatives check --root <absolute-target> --json`,
+  deriving the root from the workspace's `initiatives/README.md` (not from the
+  skill install path) — exactly the skill's step 4/6 contract.
+- **Artifact:** created
+  `initiatives/solar-flashlight-for-dark-caves/initiative.md` (frontmatter + all
+  required headings; self-flagged synthetic).
+- **Deterministic grade:** `d7y initiatives check` → `valid: true`, count 1,
+  exit 0; no errors/warnings (`checks.json`). The inventory started empty
+  (exit 0, count 0) so the relationship was classified `new`, no collision.
+
+**Negative control** — the skill did not over-trigger: **0** `Skill` tool-use
+events, and `initiatives/` left with only the placed `README.md` (no initiative
+created).
+
+### Checks and results
+
+- Headless positive run: `claude -p …` exit 0; 210 stream-json events; Skill
+  + two `d7y initiatives` Bash tool-uses observed; valid artifact produced.
+- `d7y initiatives check --root <target> --json` → `valid: true`, count 1, rc 0.
+- `d7y initiatives list --root <target> --json` → same, rc 0.
+- Negative control: `claude -p …` exit 0; 0 Skill uses; no artifact.
+- `python3 evals/validate_skill_evals.py` → VALID both suites, rc 0 (no
+  regression; the captured run is data, not an eval definition).
+- `./d7y validate` → evals VALID; "Initiatives: valid (0 found)" (the b3
+  worktree's own `initiatives/` is empty — the run lived in the `/tmp` target).
+- `manifest.json` / `checks.json` / `transcript-excerpt.json` → valid JSON.
+
+### Deviations
+
+- B3 was executed interactively from the main checkout at the human's explicit
+  direction (headless `claude -p`), rather than via a committed B3 prompt and a
+  `delegate-claude.sh` worktree handoff. All repo changes still landed on the
+  non-main `work/runtime-binding-b3` branch (no `main` commits). No B3 concrete
+  prompt was committed under `docs/prompts/` for this round.
+- `--dangerously-skip-permissions` was used so the headless session could write
+  the artifact and run `d7y` non-interactively. This narrows the run's
+  evidence: it proves load + trigger + reach + valid-artifact under a
+  bypass-permissions posture, not under a production permission profile.
+- Web tools were disallowed (`--disallowed-tools WebSearch WebFetch`) to keep the
+  synthetic run sandboxed and fast.
+
+### Residual risks / decisions returned
+
+- **Bypass-permissions posture.** The run used `--dangerously-skip-permissions`.
+  A profile-restricted run (the posture a real end-user session would use) is not
+  yet exercised; whether skill load/trigger behaves identically under a stricter
+  permission profile is unverified. Recommend a follow-up smoke under a realistic
+  profile before any non-dev claim.
+- **Single run, single skill.** This is one positive + one negative for
+  `starting-initiatives` only. It is not a corpus, a pass-rate, a paired
+  baseline/treatment comparison, or a maturity claim — those remain gated
+  eval-harness work (Stage 0 / Stage 1b). `writing-great-skills` was not run.
+- **Headless vs. interactive parity.** Behavioral proof is for headless `-p`.
+  An interactive (TUI) session in an installed directory was not separately run;
+  the trust mechanism is expected to match (interactive prompts for trust on first
+  use, then loads), but that path is not confirmed here.
+- **`/reload-plugins` not needed in `-p`.** Because trust is auto-granted in
+  non-interactive mode, the B2 install's workspace-trust guidance ("accept the
+  trust dialog, then `/reload-plugins`") does not apply to headless runs; it
+  remains correct guidance for interactive sessions. B4 documentation should
+  distinguish the two.
+- **B4 (document the dev-install path and limitations) remains open** and is the
+  only stage left before the runtime-binding completion boundary. The behavioral
+  binding itself (B3) is proven.
+- **Captured run is on disk, not in git (by repo policy).** `evals/.gitignore`
+  ignores `runs/` (the eval plan's "raw run artifacts kept outside the source
+  tree by default"). Per that invariant the run was **not** force-added. The run
+  exists on disk at the path below and the durable evidence (the tool-use
+  observations, the deterministic check result, and the curated transcript) is
+  recorded in this feedback section; the eval harness's Stage 1a grades whatever
+  workspace is pointed at it, so a durably-retained runs location is a decision
+  for the eval-harness work, not this round.
+
+### Captured run location
+
+`evals/runs/starting-initiatives/iteration-1/` (on disk in this worktree; not
+tracked — `evals/.gitignore` ignores `runs/`): `manifest.json`, `checks.json`,
+`summary.md`, `transcript-excerpt.json`, `artifacts/initiative.md`. Full raw
+stream-json transcript at `/tmp/d7y-b3-positive-transcript.jsonl`. This is the
+one real captured run the completion boundary requires; its durable retention
+path is left to the eval-harness work per repo policy.
