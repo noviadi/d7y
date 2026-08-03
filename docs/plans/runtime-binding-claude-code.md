@@ -1,7 +1,7 @@
 ---
 title: Real Runtime Binding (Claude Code) — Dev Install
 type: feat
-status: todo
+status: done
 createdAt: 2026-08-03
 updatedAt: 2026-08-03
 blocks: docs/plans/iterative-skill-eval-harness.md
