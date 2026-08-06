@@ -195,7 +195,9 @@ printf '  AGENTS.md                         (copied from agents/runtime-AGENTS.m
 printf '  CLAUDE.md                         -> AGENTS.md\n'
 printf '  initiatives/README.md             (placed)\n'
 printf '\n'
-printf 'Reach d7y in-session (the skills invoke bare "d7y"):\n'
+printf 'Reach d7y in-session: the runtime orientation (AGENTS.md, auto-loaded)\n'
+printf 'names the executable at .d7y/d7y. Invoke it directly, or prepend .d7y/ to\n'
+printf 'PATH for the bare `d7y` form:\n'
 printf '  cd %s\n' "$target"
 printf '  export PATH="$PWD/.d7y:$PATH"\n'
 printf '  d7y initiatives list\n'
