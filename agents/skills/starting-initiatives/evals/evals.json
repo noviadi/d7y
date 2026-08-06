@@ -41,6 +41,66 @@
       ]
     },
     {
+      "id": "locates-cli-first-try",
+      "prompt": "In D7Y, start an initiative to investigate whether independent consultants need an agent-assisted way to turn client calls into scoped proposals. (Runtime note: in this workspace the bare `d7y` command is not on PATH.)",
+      "should_trigger": true,
+      "expected_output": "The agent locates the d7y CLI from the workspace runtime orientation and invokes it correctly on the first attempt, then creates one valid active initiative — no failed command-not-found attempt and no filesystem search.",
+      "files": [],
+      "assertions": [
+        {
+          "id": "invokes-cli-without-failed-retry",
+          "dimension": "invocation",
+          "kind": "deterministic",
+          "required": true,
+          "description": "The trace shows the agent's first CLI call invoked a reachable d7y (bare `d7y` on PATH or the path the workspace orientation names); there is no preceding command-not-found (`127`/`126`) attempt and no filesystem search for the executable."
+        },
+        {
+          "id": "runs-checker-before-and-after",
+          "dimension": "process",
+          "kind": "deterministic",
+          "required": true,
+          "description": "The initiative CLI runs before matching (`d7y initiatives list --root <workspace> --json`) and after creation (`d7y initiatives check --root <workspace> --json`), each with a valid final result."
+        },
+        {
+          "id": "creates-one-initiative",
+          "dimension": "outcome",
+          "kind": "deterministic",
+          "required": true,
+          "description": "Exactly one new initiatives/<slug>/initiative.md exists and conforms to the organization contract."
+        }
+      ]
+    },
+    {
+      "id": "stops-when-runtime-unavailable",
+      "prompt": "In D7Y, start an initiative to investigate whether independent consultants need an agent-assisted way to turn client calls into scoped proposals. (Runtime note: no d7y executable is reachable in this workspace — neither on PATH nor at the orientation-documented path.)",
+      "should_trigger": true,
+      "expected_output": "No initiative is created. The agent reports that the D7Y runtime capability is unavailable and does not substitute model reasoning for deterministic validation.",
+      "files": [],
+      "assertions": [
+        {
+          "id": "stops-and-reports",
+          "dimension": "process",
+          "kind": "rubric",
+          "required": true,
+          "description": "After consulting the workspace orientation and finding no reachable d7y executable, the agent stops and reports the missing or incomplete runtime binding rather than improvising a path or proceeding."
+        },
+        {
+          "id": "creates-no-initiative",
+          "dimension": "outcome",
+          "kind": "deterministic",
+          "required": true,
+          "description": "No initiatives/<slug>/initiative.md is created."
+        },
+        {
+          "id": "no-model-substitution",
+          "dimension": "quality",
+          "kind": "rubric",
+          "required": true,
+          "description": "The agent does not invent an inventory or validation result in place of the deterministic CLI; it reports the capability as unavailable."
+        }
+      ]
+    },
+    {
       "id": "resume-same-initiative",
       "prompt": "Continue the customer interview analysis initiative. New context: I care more about preserving contradictory evidence than producing polished summaries. Use the running initiative rather than making another one if it still fits.",
       "should_trigger": true,

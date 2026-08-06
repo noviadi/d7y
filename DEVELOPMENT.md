@@ -51,7 +51,7 @@ Host-neutral means equivalent required behavior, not identical commands, paths, 
 ```sh
 ./d7y dev install /tmp/my-d7y-run         # materialize the runtime (idempotent)
 cd /tmp/my-d7y-run
-export PATH="$PWD/.d7y:$PATH"             # make `d7y` reachable (skills invoke bare `d7y`)
+export PATH="$PWD/.d7y:$PATH"             # optional: puts bare `d7y` on PATH (else invoke `.d7y/d7y`)
 d7y initiatives list                      # verify the binding returns a valid inventory
 ```
 
@@ -63,7 +63,7 @@ What the install creates in `<directory>`:
 - `CLAUDE.md` → symlink to `AGENTS.md`.
 - `initiatives/README.md` — the initiative contract (created if absent).
 
-**Reachability.** The skills invoke bare `d7y`, so a session in the target must prepend `.d7y/` to `PATH` (shown above) or invoke `.d7y/d7y` directly. The install prints this guidance.
+**Reachability.** The skills invoke the `d7y` CLI, which the runtime orientation (the copied `AGENTS.md`, auto-loaded by Claude Code) names at `.d7y/d7y`. An agent that reads its workspace orientation invokes `.d7y/d7y` directly on the first try; a session may also prepend `.d7y/` to `PATH` (shown above) to use the bare `d7y` form. The install prints this guidance.
 
 **Workspace trust.** Project-scope skills (`.claude/skills/<name>`) load only from a trusted workspace:
 

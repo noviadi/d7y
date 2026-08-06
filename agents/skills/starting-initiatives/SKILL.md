@@ -49,9 +49,9 @@ If the current initiative still encompasses the request, continue it and skip cr
 
 ## 4. Search before creating
 
-Run `d7y initiatives list --root <absolute-workspace-root> --json` to validate the organization and produce the complete deterministic inventory. Derive `<absolute-workspace-root>` from the repository whose `initiatives/README.md` you loaded in step 1, not from the process working directory or the skill installation path.
+Invoke the `d7y` CLI at the path the workspace runtime orientation documents, and run `d7y initiatives list --root <absolute-workspace-root> --json` to validate the organization and produce the complete deterministic inventory. Derive `<absolute-workspace-root>` from the repository whose `initiatives/README.md` you loaded in step 1, not from the process working directory or the skill installation path.
 
-Interpret the result by contract: exit `0` is a valid completed inventory; exit `1` with valid JSON is still a completed inventory that contains contract errors—preserve and report the invalid records rather than treating them as absent; exit `2`, a missing `d7y` command, malformed JSON, or an execution denial means the D7Y runtime capability is unavailable or incomplete, so stop and report it rather than replacing deterministic validation with model reasoning. Preserve and report invalid artifacts; do not silently exclude them from comparison when their intent remains recoverable.
+Interpret the result by contract: exit `0` is a valid completed inventory; exit `1` with valid JSON is still a completed inventory that contains contract errors—preserve and report the invalid records rather than treating them as absent; a `d7y` command that cannot be found (the shell reports command not found, exit `127`/`126`), exit `2`, malformed JSON, or an execution denial means the D7Y runtime capability is unavailable or incomplete, so stop and report it rather than replacing deterministic validation with model reasoning. Preserve and report invalid artifacts; do not silently exclude them from comparison when their intent remains recoverable.
 
 Use the inventory to search active and paused initiatives first, then graduated and archived ones, using:
 
@@ -123,7 +123,7 @@ Do not run a full discovery methodology as part of initiation. Invoke or recomme
 
 - **Missing organization contract:** establish or restore the contract before creation.
 - **Checker failure:** preserve existing artifacts, report every deterministic error, and repair only the initiative being created or explicitly selected for maintenance.
-- **Unavailable runtime capability:** if `d7y initiatives` exits `2`, is missing, returns malformed output, or is denied, stop and report the missing or incomplete D7Y binding rather than substituting model reasoning for deterministic validation.
+- **Unavailable runtime capability:** if `d7y initiatives` cannot be found (exit `127`/`126`), exits `2`, returns malformed output, or is denied, stop and report the missing or incomplete D7Y binding rather than substituting model reasoning for deterministic validation.
 - **Malformed candidate:** preserve it, report the missing identity fields, and include it in comparison when its intent is recoverable.
 - **Slug collision:** select a distinct stable slug; do not overwrite.
 - **Several strong matches:** classify as unclear and request a choice.

@@ -42,6 +42,14 @@ d7y initiatives check               # validate initiative organization
 d7y initiatives list --json         # machine-readable inventory
 ```
 
+The `d7y` executable is installed at `.d7y/d7y` in this workspace. If the bare
+`d7y` command is not on `PATH`, invoke the executable directly rather than
+searching the filesystem for it:
+
+```sh
+.d7y/d7y initiatives list           # same commands, explicit path
+```
+
 `d7y` owns command dispatch, target-workspace resolution, deterministic
 execution, and the output contract only. It does not select an initiative
 semantically or advance the discovery loop — that is the agent's job, guided by
