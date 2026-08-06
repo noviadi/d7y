@@ -136,6 +136,142 @@
       ]
     },
     {
+      "id": "name-only-stays-thin",
+      "prompt": "create initiative called fuzzy finance tracker",
+      "should_trigger": true,
+      "expected_output": "A thin artifact whose sections read from the request only: sections the request does not support are marked Unknown, any inference sits in Assumptions and is labeled, and no user segment, sub-activity, mechanism, or example is invented.",
+      "files": [],
+      "assertions": [
+        {
+          "id": "no-invented-specifics",
+          "dimension": "quality",
+          "kind": "rubric",
+          "required": true,
+          "description": "Outcome and Primary uncertainty contain no concrete sub-activities, mechanisms, or examples (e.g. transactions, categorization, estimates) that the name-only prompt did not supply."
+        },
+        {
+          "id": "unsupported-sections-unknown",
+          "dimension": "quality",
+          "kind": "rubric",
+          "required": true,
+          "description": "Sections the request does not support (notably Subject and Constraints when unstated) read Unknown rather than being filled."
+        },
+        {
+          "id": "creates-one-valid-initiative",
+          "dimension": "outcome",
+          "kind": "deterministic",
+          "required": true,
+          "description": "Exactly one initiatives/<slug>/initiative.md exists and conforms to the organization contract."
+        }
+      ]
+    },
+    {
+      "id": "rich-context-traces-to-prompt",
+      "prompt": "create initiative called fuzzy inventory management. It's an inventory management where we don't aim for precision but rather signalling when we have, don't have, or require replenish of resources. The green, yellow, red inventory system and where the value is not exactly discrete underneath. When precision and complete data available use it but user view is fuzzy by default but can request for exact numbers.",
+      "should_trigger": true,
+      "expected_output": "A dense but fully traceable artifact: every non-trivial claim restates the request, Evidence attributes to the user's framing, and any inference is in Assumptions and labeled.",
+      "files": [],
+      "assertions": [
+        {
+          "id": "evidence-attributes-to-framing",
+          "dimension": "process",
+          "kind": "rubric",
+          "required": true,
+          "description": "The Evidence section explicitly attributes its content to the user's framing rather than asserting bare facts or reading 'None yet'."
+        },
+        {
+          "id": "no-untraceable-claims",
+          "dimension": "quality",
+          "kind": "rubric",
+          "required": true,
+          "description": "No user segment, mechanism, or example appears unflagged that the prompt did not supply; inferences are confined to Assumptions and labeled."
+        },
+        {
+          "id": "creates-one-valid-initiative",
+          "dimension": "outcome",
+          "kind": "deterministic",
+          "required": true,
+          "description": "Exactly one initiatives/<slug>/initiative.md exists and conforms to the organization contract."
+        }
+      ]
+    },
+    {
+      "id": "no-invented-user-segment",
+      "prompt": "create initiative called offline-first recipe sync",
+      "should_trigger": true,
+      "expected_output": "An initiative whose Subject reads Unknown (or asks) because the request names no intended user; no user segment is posited.",
+      "files": [],
+      "assertions": [
+        {
+          "id": "subject-unknown-when-user-unstated",
+          "dimension": "quality",
+          "kind": "rubric",
+          "required": true,
+          "description": "Subject does not posit a user segment (e.g. 'home cooks', 'teams') the request did not name; it reads Unknown or explicitly defers."
+        },
+        {
+          "id": "creates-one-valid-initiative",
+          "dimension": "outcome",
+          "kind": "deterministic",
+          "required": true,
+          "description": "Exactly one initiatives/<slug>/initiative.md exists and conforms to the organization contract."
+        }
+      ]
+    },
+    {
+      "id": "inference-confined-to-assumptions",
+      "prompt": "create initiative for a tool that summarizes customer calls. I think it'll save time but I'm not sure who uses it yet.",
+      "should_trigger": true,
+      "expected_output": "Outcome restates the stated outcome (summarize customer calls, possibly saves time); Subject is Unknown; every inference lives in Assumptions and is labeled, not asserted in Outcome or Primary uncertainty.",
+      "files": [],
+      "assertions": [
+        {
+          "id": "inference-only-in-assumptions",
+          "dimension": "quality",
+          "kind": "rubric",
+          "required": true,
+          "description": "All inferred content appears in the Assumptions section, labeled as inference; Outcome and Primary uncertainty assert nothing beyond what the request states."
+        },
+        {
+          "id": "creates-one-valid-initiative",
+          "dimension": "outcome",
+          "kind": "deterministic",
+          "required": true,
+          "description": "Exactly one initiatives/<slug>/initiative.md exists and conforms to the organization contract."
+        }
+      ]
+    },
+    {
+      "id": "evidence-attributes-to-framing",
+      "prompt": "create initiative to decide whether to add export-to-PDF to our notes app. Sales flagged it twice last quarter; engineering says it's a week of work; I want a pursue/reshape/stop call before we build.",
+      "should_trigger": true,
+      "expected_output": "An artifact whose Evidence section records the user-supplied facts (sales flagged twice, ~one week of work, pursue/reshape/stop decision wanted) attributed to the framing, with no added untraceable detail.",
+      "files": [],
+      "assertions": [
+        {
+          "id": "evidence-records-given-facts",
+          "dimension": "process",
+          "kind": "rubric",
+          "required": true,
+          "description": "Evidence captures the facts the prompt supplied and attributes them to the user's framing; it does not invent additional evidence."
+        },
+        {
+          "id": "no-invented-evidence",
+          "dimension": "quality",
+          "kind": "rubric",
+          "required": true,
+          "description": "No claim in Evidence or Assumptions is untraceable to the prompt; any inference is labeled."
+        },
+        {
+          "id": "creates-one-valid-initiative",
+          "dimension": "outcome",
+          "kind": "deterministic",
+          "required": true,
+          "description": "Exactly one initiatives/<slug>/initiative.md exists and conforms to the organization contract."
+        }
+      ]
+    },
+    {
       "id": "casual-brainstorm",
       "prompt": "Brainstorm ten playful names for a tool that summarizes customer calls. This is just a quick naming exercise; do not start a project or preserve it yet.",
       "should_trigger": false,

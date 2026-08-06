@@ -96,7 +96,8 @@ For `unclear`, present the closest candidates and the material difference, then 
 - Derive a concise stable slug and check for a path collision.
 - Create `initiatives/<slug>/initiative.md` using the exact minimum structure in the organization contract.
 - Set dates to the current local date and status to `active`.
-- Fill known context concisely; mark unknowns and inferences explicitly.
+- Fill each section only from the request: restate given context in Evidence; confine every inference to Assumptions and label it as inference; leave any section the request does not support as `Unknown`.
+- Do not invent user segments, sub-activities, mechanisms, or examples the request did not supply. Artifact specificity scales with the context given — a name-only request yields a thin artifact, not a fleshed-out one.
 - Add reciprocal `related` links when another initiative is materially related.
 - Create no additional directories or artifacts until a named need requires them.
 - Run `d7y initiatives check --root <absolute-workspace-root> --json` again and resolve every error introduced by the new artifact.
