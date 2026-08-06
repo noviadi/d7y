@@ -64,3 +64,53 @@ Entry fields: `skill`, `intent`, `observed`, `expected`, `failure_class`
 - **status:** addressed in contract — the skill now requires resolving the
   executable from the orientation before treating the capability as
   unavailable. Derived case: `stops-when-runtime-unavailable`.
+
+## 0003 — name-only prompt elaborated with untraceable content
+
+- **skill:** starting-initiatives
+- **intent:** "create initiative called fuzzy finance tracker" (a name only).
+- **observed:** The artifact is format-valid and marks several sections
+  `Unknown` (Subject, Constraints; Evidence = "started from a name only"), but
+  Outcome and Primary uncertainty assert specifics the request did not supply:
+  "fuzzy" resolved to *input* imprecision; invented sub-activities
+  ("free-form / approximate transactions", "categorizing noisy data", "estimates
+  over exact figures"); and an invented user segment ("Personal or small-team
+  money tracking"). One inference is labeled in Assumptions, but the rest is
+  asserted as content.
+- **expected:** A name-only request yields a thin artifact: sections the request
+  does not support read `Unknown`; all inference is confined to Assumptions and
+  labeled; no invented user segments, sub-activities, mechanisms, or examples.
+- **failure_class:** agent_error (over-elaboration beyond the supplied context),
+  rooted in the skill under-specifying the lightness/traceability rule
+- **severity:** medium — the artifact is usable, but untraceable content in a
+  discovery artifact can mislead downstream decisions by reading as established
+  understanding
+- **outcome_checkable:** yes — traceability is rubric-gradeable against the prompt
+- **source:** `../d7y-workspaces/workspace-1` run;
+  `initiatives/fuzzy-finance-tracker/initiative.md`
+- **status:** draft — skill-hardening + derived cases in
+  `work/skill-lightness-hardening`. The discriminating Stage 1b comparison is
+  `lighter-than-baseline-on-terse-prompt`: the skill must produce a thinner,
+  more honest artifact than a no-skill baseline on a name-only prompt.
+
+## 0004 — invented user segment from a rich prompt
+
+- **skill:** starting-initiatives
+- **intent:** Rich prompt describing a fuzzy, green/yellow/red, signal-based
+  inventory with precision-on-request and a non-discrete underlying value.
+- **observed:** The artifact is dense and mostly traceable — Evidence correctly
+  attributes to "the user's framing" and assumptions are labeled. One leak:
+  Subject posits "**Operators and managers** who need to make replenishment
+  decisions…" — the prompt said only a generic "user" and never named a user
+  segment.
+- **expected:** When the intended user is not stated, Subject reads `Unknown`
+  rather than positing a segment.
+- **failure_class:** agent_error (invented user segment), narrow instance of the
+  0003 root cause
+- **severity:** low — single unflagged inference in an otherwise traceable
+  artifact
+- **outcome_checkable:** yes
+- **source:** `../d7y-workspaces/workspace-2` run;
+  `initiatives/fuzzy-inventory-management/initiative.md`
+- **status:** draft — same hardening as 0003 covers this; derived case
+  `no-invented-user-segment`.
